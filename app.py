@@ -407,7 +407,8 @@ def compute(state: Dict[str, Any]) -> Derived:
 # ============================================================
 
 def print_summary(state: Dict[str, Any], D: Derived) -> None:
-    print("\n==== SUMMARY (Compact) ====")
+    print("
+==== SUMMARY (Compact) ====")
     print(f"Max GFA:        {nf(D.maxGFA)} m²")
     print(f"GFA (actual):   {nf(D.gfa)} m²   [{'OK' if D.farOk else 'EXCEEDS'}]")
     print(f"Total CFA:      {nf(D.totalCFA)} m²")
@@ -415,21 +416,25 @@ def print_summary(state: Dict[str, Any], D: Derived) -> None:
     print(f"Height (m):     {nf(D.estHeight)}   [{'OK' if D.heightOk else 'OVER'}]")
     print(f"Budget (฿):     {nf(state['budget'])}   Total CAPEX: {nf(D.capexTotal)}   [{'OK' if D.budgetOk else 'OVER'}]")
 
-    print("\n-- Zoning --")
+    print("
+-- Zoning --")
     if abs(D.farCounted - D.gfa) > 1e-6:
         print(f"FAR-counted (legal): {nf(D.farCounted)} m²")
     print(f"Open Space: {nf(D.openSpaceArea)} m²   Green: {nf(D.greenArea)} m²")
 
-    print("\n-- Areas --")
+    print("
+-- Areas --")
     print(f"Main CFA (AG/BG): {nf(D.mainCFA_AG)} / {nf(D.mainCFA_BG)} m²")
     print(f"Park CFA Conv/Auto: {nf(D.parkConCFA)} / {nf(D.parkAutoCFA)} m²")
 
-    print("\n-- Parking --")
+    print("
+-- Parking --")
     print(f"Cars/Floor Conv/Auto: {D.convCarsPerFloor} / {D.autoCarsPerFloor}")
     print(f"Totals Conv/Auto/Open-lot/All: {D.totalConvCars} / {D.totalAutoCars} / {D.openLotCars} / {D.totalCars}")
     print(f"Disabled Spaces (calc): {D.disabledCars}")
 
-    print("\n-- CAPEX (฿) --")
+    print("
+-- CAPEX (฿) --")
     print(f"Main: {nf(D.costMain)}  | Park Conv: {nf(D.costParkConv)}  | Park Auto: {nf(D.costParkAuto)}")
     print(f"Open-lot (/car): {nf(D.costOpenLotPerCar)}  | Conv Equip (/car): {nf(D.costConvPerCar)}  | Auto Mech (/car): {nf(D.costAutoPerCar)}")
     print(f"Green: {nf(D.greenCost)}  | Custom: {nf(D.customCostTotal)}")
@@ -452,7 +457,8 @@ def import_csv(path: str) -> Dict[str, Any]:
 
 def run_tests() -> Tuple[int, int]:
     """Return (passed, total). Print each case."""
-    print("\n==== TESTS ====")
+    print("
+==== TESTS ====")
     passed = 0
     total = 0
 
@@ -524,7 +530,8 @@ def run_tests() -> Tuple[int, int]:
     D6 = compute(s6)
     check("Conv cars per floor", D6.convCarsPerFloor, 4)
 
-    print(f"\nPassed {passed}/{total} tests.")
+    print(f"
+Passed {passed}/{total} tests.")
     return passed, total
 
 
@@ -734,7 +741,9 @@ def run_streamlit_app() -> None:
         with c5:
             st.subheader("Site Visualization")
             svg = _site_viz_svg(float(s["siteArea"]), float(s["osr"]), D.greenArea)
-            st.markdown(svg, unsafe_allow_html=True)
+            # Use components.html for reliable SVG rendering on Streamlit Cloud
+            import streamlit.components.v1 as components
+            components.html(svg, height=280, scrolling=False)
 
     with details_tab:
         if pd is not None:
