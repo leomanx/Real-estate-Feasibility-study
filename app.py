@@ -7,6 +7,13 @@ import argparse
 from dataclasses import dataclass
 from typing import Dict, Any, List, Tuple
 
+"""
+Streamlit Feasibility App — sandbox-friendly (no matplotlib)
+- Falls back gracefully when optional libs (streamlit/pandas) are missing
+- Uses inline SVG via components.html (robust on Streamlit Cloud) for Site Visualization
+- Keeps CLI mode for quick testing (no external deps required)
+"""
+
 # Optional deps (no hard fail): Streamlit / Pandas
 try:
     import streamlit as st  # type: ignore
@@ -407,8 +414,7 @@ def compute(state: Dict[str, Any]) -> Derived:
 # ============================================================
 
 def print_summary(state: Dict[str, Any], D: Derived) -> None:
-    print("
-==== SUMMARY (Compact) ====")
+    print("\n==== SUMMARY (Compact) ====")
     print(f"Max GFA:        {nf(D.maxGFA)} m²")
     print(f"GFA (actual):   {nf(D.gfa)} m²   [{'OK' if D.farOk else 'EXCEEDS'}]")
     print(f"Total CFA:      {nf(D.totalCFA)} m²")
@@ -416,25 +422,21 @@ def print_summary(state: Dict[str, Any], D: Derived) -> None:
     print(f"Height (m):     {nf(D.estHeight)}   [{'OK' if D.heightOk else 'OVER'}]")
     print(f"Budget (฿):     {nf(state['budget'])}   Total CAPEX: {nf(D.capexTotal)}   [{'OK' if D.budgetOk else 'OVER'}]")
 
-    print("
--- Zoning --")
+    print("\n-- Zoning --")
     if abs(D.farCounted - D.gfa) > 1e-6:
         print(f"FAR-counted (legal): {nf(D.farCounted)} m²")
     print(f"Open Space: {nf(D.openSpaceArea)} m²   Green: {nf(D.greenArea)} m²")
 
-    print("
--- Areas --")
+    print("\n-- Areas --")
     print(f"Main CFA (AG/BG): {nf(D.mainCFA_AG)} / {nf(D.mainCFA_BG)} m²")
     print(f"Park CFA Conv/Auto: {nf(D.parkConCFA)} / {nf(D.parkAutoCFA)} m²")
 
-    print("
--- Parking --")
+    print("\n-- Parking --")
     print(f"Cars/Floor Conv/Auto: {D.convCarsPerFloor} / {D.autoCarsPerFloor}")
     print(f"Totals Conv/Auto/Open-lot/All: {D.totalConvCars} / {D.totalAutoCars} / {D.openLotCars} / {D.totalCars}")
     print(f"Disabled Spaces (calc): {D.disabledCars}")
 
-    print("
--- CAPEX (฿) --")
+    print("\n-- CAPEX (฿) --")
     print(f"Main: {nf(D.costMain)}  | Park Conv: {nf(D.costParkConv)}  | Park Auto: {nf(D.costParkAuto)}")
     print(f"Open-lot (/car): {nf(D.costOpenLotPerCar)}  | Conv Equip (/car): {nf(D.costConvPerCar)}  | Auto Mech (/car): {nf(D.costAutoPerCar)}")
     print(f"Green: {nf(D.greenCost)}  | Custom: {nf(D.customCostTotal)}")
@@ -452,13 +454,12 @@ def import_csv(path: str) -> Dict[str, Any]:
 
 
 # ============================================================
-# Tests (ported)
+# Tests (ported + added)
 # ============================================================
 
 def run_tests() -> Tuple[int, int]:
     """Return (passed, total). Print each case."""
-    print("
-==== TESTS ====")
+    print("\n==== TESTS ====")
     passed = 0
     total = 0
 
@@ -530,8 +531,19 @@ def run_tests() -> Tuple[int, int]:
     D6 = compute(s6)
     check("Conv cars per floor", D6.convCarsPerFloor, 4)
 
-    print(f"
-Passed {passed}/{total} tests.")
+    # 6) Disabled parking lower bound (negative input)
+    check("Disabled parking negative -> 0", calc_disabled_parking(-5), 0)
+
+    # 7) Green area proportionality
+    s7 = DEFAULT_SCENARIO.copy()
+    s7["siteArea"] = 1000.0
+    s7["osr"] = 20.0
+    s7["greenPctOfOSR"] = 50.0
+    D7 = compute(s7)
+    # Open space = 200, green = 100
+    check("Green area calc", round(D7.greenArea, 6), 100.0)
+
+    print(f"\nPassed {passed}/{total} tests.")
     return passed, total
 
 
@@ -539,8 +551,8 @@ Passed {passed}/{total} tests.")
 # Streamlit UI (no matplotlib) — compact
 # ============================================================
 
-def _site_viz_svg(site_area: float, osr: float, green_area: float) -> str:
-    # Draw nested squares proportional to OSR and green ratio.
+def _site_viz_html(site_area: float, osr: float, green_area: float) -> str:
+    """Return a FULL HTML doc containing inline SVG (robust on Streamlit Cloud)."""
     osr_ratio = clamp(osr / 100.0, 0.0, 1.0)
     green_ratio = 0.0
     if site_area * osr_ratio > 0:
@@ -554,17 +566,32 @@ def _site_viz_svg(site_area: float, osr: float, green_area: float) -> str:
     greenH = osrH * (_m.sqrt(green_ratio))
     cx, cy = W/2, H/2
     return f"""
-    <svg viewBox='0 0 {W} {H}' width='100%'>
-      <rect x='0' y='0' width='{W}' height='{H}' rx='12' fill='#f8fafc' />
-      <rect x='{P}' y='{P}' width='{siteW}' height='{siteH}' fill='#fff' stroke='#CBD5E1' stroke-width='2'/>
-      <rect x='{cx - osrW/2}' y='{cy - osrH/2}' width='{osrW}' height='{osrH}' fill='#dcfce7' stroke='#86efac'/>
-      <rect x='{cx - greenW/2}' y='{cy - greenH/2}' width='{greenW}' height='{greenH}' fill='#86efac' stroke='#059669'/>
-      <g font-size='10' fill='#334155'>
-        <text x='{P + 6}' y='{P + 14}'>Site</text>
-        <text x='{cx - osrW/2 + 6}' y='{cy - osrH/2 + 14}'>Open Space</text>
-        <text x='{cx - greenW/2 + 6}' y='{cy - greenH/2 + 14}'>Green</text>
-      </g>
-    </svg>
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset='utf-8'/>
+      <style>
+        html,body{{margin:0;padding:0;background:transparent;}}
+        .wrap{{width:100%;height:100%;display:flex;align-items:center;justify-content:center;}}
+        svg{{max-width:100%;height:auto;}}
+      </style>
+    </head>
+    <body>
+      <div class='wrap'>
+        <svg viewBox='0 0 {W} {H}' width='100%'>
+          <rect x='0' y='0' width='{W}' height='{H}' rx='12' fill='#f8fafc' />
+          <rect x='{P}' y='{P}' width='{siteW}' height='{siteH}' fill='#fff' stroke='#CBD5E1' stroke-width='2'/>
+          <rect x='{cx - osrW/2}' y='{cy - osrH/2}' width='{osrW}' height='{osrH}' fill='#dcfce7' stroke='#86efac'/>
+          <rect x='{cx - greenW/2}' y='{cy - greenH/2}' width='{greenW}' height='{greenH}' fill='#86efac' stroke='#059669'/>
+          <g font-size='10' fill='#334155'>
+            <text x='{P + 6}' y='{P + 14}'>Site</text>
+            <text x='{cx - osrW/2 + 6}' y='{cy - osrH/2 + 14}'>Open Space</text>
+            <text x='{cx - greenW/2 + 6}' y='{cy - greenH/2 + 14}'>Green</text>
+          </g>
+        </svg>
+      </div>
+    </body>
+    </html>
     """
 
 
@@ -740,10 +767,13 @@ def run_streamlit_app() -> None:
             st.write(f"**Total CAPEX:** **{nf(D.capexTotal)}**")
         with c5:
             st.subheader("Site Visualization")
-            svg = _site_viz_svg(float(s["siteArea"]), float(s["osr"]), D.greenArea)
-            # Use components.html for reliable SVG rendering on Streamlit Cloud
+            svg_html = _site_viz_html(float(s["siteArea"]), float(s["osr"]), D.greenArea)
             import streamlit.components.v1 as components
-            components.html(svg, height=280, scrolling=False)
+            try:
+                components.html(svg_html, height=300, scrolling=False)
+            except Exception:
+                st.info("(Fallback) Unable to render SVG; showing raw values instead.")
+                st.write({"siteArea": s["siteArea"], "osr(%)": s["osr"], "greenArea": D.greenArea})
 
     with details_tab:
         if pd is not None:
@@ -807,6 +837,8 @@ def run_streamlit_app() -> None:
                 ("0 ≤ NSA/GFA ≤ 1", 0.0 <= D.deNSA_GFA <= 1.0, True),
                 ("0 ≤ NSA/CFA ≤ 1", 0.0 <= D.deNSA_CFA <= 1.0, True),
                 ("0 ≤ NLA/GFA ≤ 1", 0.0 <= D.deNLA_GFA <= 1.0, True),
+                ("Disabled parking negative -> 0", calc_disabled_parking(-5), 0),
+                ("Green area calc (1000m² site, 20% OSR, 50% green)", round(compute({**s, 'siteArea':1000.0, 'osr':20.0, 'greenPctOfOSR':50.0}).greenArea, 6), 100.0),
             ]
             rows = []
             for name, actual, expected in tests:
