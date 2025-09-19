@@ -401,7 +401,8 @@ with cF:
     elif demand_mode == "per bedroom":
         st.markdown(f"Legal (per bedroom): **{math.ceil(legal_beds)}**  → **{demand_mode}** selected")
     else:
-        st.markdown(f"Legal: max(unit={math.ceil(legal_units))}, bed={math.ceil(legal_beds)}**)  → **both (max)**")
+        st.markdown(
+    f"Legal: max(unit=**{math.ceil(legal_units)}**, bed=**{math.ceil(legal_beds)}**) → **both (max)**")
     legal_req = math.ceil(legal_required)
     prog_req  = math.ceil(prog_required_by_bed)
     worst_req = max(legal_req, prog_req)
