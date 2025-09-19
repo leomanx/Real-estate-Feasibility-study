@@ -1,6 +1,7 @@
 [theme]
-base="light"
-primaryColor="#0ea5e9"
-backgroundColor="#ffffff"
-secondaryBackgroundColor="#f8fafc"
-textColor="#0f172a"
+base = "light"
+primaryColor = "#111827"              # เกือบดำ
+backgroundColor = "#f5f5f5"           # เทาอ่อน (ไม่ขาวจั๊วะ)
+secondaryBackgroundColor = "#ffffff"  # การ์ดสีขาวสะอาด
+textColor = "#0f172a"                 # กรมท่าเข้ม
+font = "sans serif"
