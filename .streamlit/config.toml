@@ -1,7 +1,7 @@
 [theme]
-base = "light"
-primaryColor = "#2563eb"              # ฟ้า (match "Construction")
-backgroundColor = "#0f172a"           # พื้นหลังเข้ม (เพื่อไม่ขาว)
-secondaryBackgroundColor = "#ffffff"  # สีการ์ด (ขาวตัดเข้ม)
-textColor = "#e5e7eb"                 # ตัวอักษรอ่อนบนพื้นเข้ม
+base = "dark"
+primaryColor = "#22c55e"              # เขียว (match "Green")
+backgroundColor = "#0b1220"           # ดำอมฟ้า
+secondaryBackgroundColor = "#111827"  # พื้นการ์ด
+textColor = "#e5e7eb"                 # เทาอ่อน
 font = "sans serif"
