@@ -362,7 +362,16 @@ pie_df = pd.DataFrame([
     {"name": "Green",        "value": max(0, d["greenCost"])},
     {"name": "Parking",      "value": max(0, d["parkingCost"])},
 ])
-fig = px.pie(pie_df, values="value", names="name", hole=0.45)
+fig = px.pie(
+    pie_df, values="value", names="name", hole=0.45,
+    color="name",
+    color_discrete_map={
+        "Construction": "#3b82f6",
+        "Green": "#22c55e",
+        "Parking": "#f59e0b",
+        "Custom": "#a855f7",
+    }
+)
 st.plotly_chart(fig, use_container_width=True)
 
 # Download / Upload CSV of scenario
