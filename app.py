@@ -359,8 +359,8 @@ d = compute(s)
 # =============================
 st.title("🏗️ Feasibility (TH) — Minimal Mono")
 k1,k2,k3,k4 = st.columns(4, gap="small")
-with k1: st.metric("FAR Max.(m²)", nf(d["farCounted"]))
-with k2: st.metric("GFA (m²)", nf(d["maxGFA"]))
+with k1: st.metric("FAR Max.(m²)", nf(d["maxGFA"]))
+with k2: st.metric("GFA (m²)", nf(d["farCounted"]))
 with k3: st.metric("Est. Height (m)", nf(d["estHeight"]), delta=("OK" if d["heightOk"] else "Exceeds"))
 with k4: st.metric("CAPEX (฿)", nf(d["capexTotal"]), delta=("OK" if d["budgetOk"] else "Over Budget"))
 
