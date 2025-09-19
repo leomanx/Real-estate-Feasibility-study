@@ -41,28 +41,17 @@ def compute_far_counted(mainAG, mainBG, pcAG, pcBG, paAG, paBG, countParking, co
         far += paAG + (paBG if countBasement else 0.0)
     return far
     
-def ensure_defaults(s):
+def ensure_defaults(s: dict) -> dict:
+    """Merge missing keys from DEFAULT into scenario dict, keep types consistent."""
     out = dict(s)
     for k, v in DEFAULT.items():
         if k not in out:
-            out[k] = float(v) if isinstance(v, (int, float)) else v
+            # keep numeric as float for Streamlit number_input consistency
+            if isinstance(v, (int, float)):
+                out[k] = float(v)
+            else:
+                out[k] = v
     return out
-
-# 2) after creating/loading scenario
-st.session_state.scenario = ensure_defaults(st.session_state.scenario)
-s = st.session_state.scenario
-
-# 3) after JSON import (scenario)
-st.session_state.scenario.update(sc)
-st.session_state.scenario = ensure_defaults(st.session_state.scenario)
-
-# 4) the input that crashed
-s["nlaPctOfPublic"] = e3.number_input(
-    "NLA (% of Public)",
-    min_value=0.0, max_value=100.0,
-    value=float(s.get("nlaPctOfPublic", 40.0)),
-    step=1.0
-)
 
 # -----------------------------
 # Defaults
@@ -147,6 +136,13 @@ st.title("Feasibility — Core+")
 # -----------------------------
 if "scenario" not in st.session_state:
     st.session_state.scenario = DEFAULT.copy()
+if "scenario" not in st.session_state:
+    st.session_state.scenario = DEFAULT.copy()
+
+# ensure any new fields (e.g., nlaPctOfPublic) are present
+st.session_state.scenario = ensure_defaults(st.session_state.scenario)
+s = st.session_state.scenario
+
 if "custom_costs" not in st.session_state:
     # {id, name, kind:"per_sqm"|"lump_sum", rate: float}
     st.session_state.custom_costs = []
@@ -221,7 +217,7 @@ with colD:
     e1, e2, e3, e4, e5 = st.columns(5, gap="small")
     s["gfaOverCfaPct"]   = e1.number_input("GFA from CFA (%)",   min_value=0.0, max_value=100.0, value=float(s["gfaOverCfaPct"]), step=1.0)
     s["publicPctOfGFA"]  = e2.number_input("Public (% of GFA)",  min_value=0.0, max_value=100.0, value=float(s["publicPctOfGFA"]), step=1.0)
-    s["nlaPctOfPublic"]  = e3.number_input("NLA (% of Public)",  min_value=0.0, max_value=100.0, value=float(s["nlaPctOfPublic"]), step=1.0)  # NEW
+    s["nlaPctOfPublic"] = e3.number_input("NLA (% of Public)",   min_value=0.0, max_value=100.0, value=float(s.get("nlaPctOfPublic", 40.0)), step=1.0)
     s["bohPctOfGFA"]     = e4.number_input("BOH (% of GFA)",     min_value=0.0, max_value=100.0, value=float(s["bohPctOfGFA"]), step=1.0)
     s["servicePctOfGFA"] = e5.number_input("Service (% of GFA)", min_value=0.0, max_value=100.0, value=float(s["servicePctOfGFA"]), step=1.0)
 
@@ -456,6 +452,7 @@ with cY:
                 for k, v in sc.items():
                     if isinstance(v, (int, float)): sc[k] = float(v)
                 st.session_state.scenario.update(sc)
+                    st.session_state.scenario = ensure_defaults(st.session_state.scenario)
             if "custom_costs" in data and isinstance(data["custom_costs"], list):
                 cc = []
                 for i in data["custom_costs"]:
