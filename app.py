@@ -234,72 +234,91 @@ with st.sidebar:
     s = {**DEFAULT}
 
     colA, colB = st.columns(2)
-    s["siteArea"] = colA.number_input("Site Area (m²)", min_value=0.0, value=DEFAULT["siteArea"], step=100.0)
-    s["far"] = colB.number_input("FAR (1–10)", min_value=1.0, max_value=10.0, value=float(DEFAULT["far"]), step=0.1)
+    s["siteArea"] = colA.number_input(
+        "Site Area (m²)",
+        min_value=0.0,
+        value=float(DEFAULT["siteArea"]),
+        step=100.0
+    )
+    s["far"] = colB.number_input(
+        "FAR (1–10)",
+        min_value=1.0, max_value=10.0,
+        value=float(DEFAULT["far"]),
+        step=0.1
+    )
 
     s["bType"] = st.selectbox("Building Type", BUILDING_TYPES, index=BUILDING_TYPES.index(DEFAULT["bType"]))
-    s["osr"] = st.number_input("OSR (%)", min_value=0.0, max_value=100.0, value=DEFAULT["osr"], step=1.0)
-    s["greenPctOfOSR"] = st.number_input("Green (% of OSR)", min_value=0.0, max_value=100.0, value=DEFAULT["greenPctOfOSR"], step=1.0)
+    s["osr"] = st.number_input(
+        "OSR (%)",
+        min_value=0.0, max_value=100.0,
+        value=float(DEFAULT["osr"]),
+        step=1.0
+    )
+    s["greenPctOfOSR"] = st.number_input(
+        "Green (% of OSR)",
+        min_value=0.0, max_value=100.0,
+        value=float(DEFAULT["greenPctOfOSR"]),
+        step=1.0
+    )
 
     st.divider()
     st.subheader("Geometry & Height")
     g1, g2, g3 = st.columns(3)
-    s["mainFloorsAG"] = g1.number_input("Main Floors (AG)", min_value=0, value=DEFAULT["mainFloorsAG"])
-    s["mainFloorsBG"] = g2.number_input("Main Floors (BG)", min_value=0, value=DEFAULT["mainFloorsBG"])
-    s["ftf"] = g3.number_input("F2F (m)", min_value=0.0, value=DEFAULT["ftf"], step=0.1)
+    s["mainFloorsAG"] = g1.number_input("Main Floors (AG)", min_value=0, value=int(DEFAULT["mainFloorsAG"]), step=1)
+    s["mainFloorsBG"] = g2.number_input("Main Floors (BG)", min_value=0, value=int(DEFAULT["mainFloorsBG"]), step=1)
+    s["ftf"] = g3.number_input("F2F (m)", min_value=0.0, value=float(DEFAULT["ftf"]), step=0.1)
 
     p1, p2, p3 = st.columns(3)
-    s["parkingConFloorsAG"] = p1.number_input("Park Conv (AG)", min_value=0, value=DEFAULT["parkingConFloorsAG"])
-    s["parkingConFloorsBG"] = p2.number_input("Park Conv (BG)", min_value=0, value=DEFAULT["parkingConFloorsBG"])
-    s["maxHeight"] = p3.number_input("Max Height (m)", min_value=0.0, value=DEFAULT["maxHeight"], step=1.0)
+    s["parkingConFloorsAG"] = p1.number_input("Park Conv (AG)", min_value=0, value=int(DEFAULT["parkingConFloorsAG"]), step=1)
+    s["parkingConFloorsBG"] = p2.number_input("Park Conv (BG)", min_value=0, value=int(DEFAULT["parkingConFloorsBG"]), step=1)
+    s["maxHeight"] = p3.number_input("Max Height (m)", min_value=0.0, value=float(DEFAULT["maxHeight"]), step=1.0)
 
     a1, a2 = st.columns(2)
-    s["parkingAutoFloorsAG"] = a1.number_input("Auto Park (AG)", min_value=0, value=DEFAULT["parkingAutoFloorsAG"])
-    s["parkingAutoFloorsBG"] = a2.number_input("Auto Park (BG)", min_value=0, value=DEFAULT["parkingAutoFloorsBG"])
+    s["parkingAutoFloorsAG"] = a1.number_input("Auto Park (AG)", min_value=0, value=int(DEFAULT["parkingAutoFloorsAG"]), step=1)
+    s["parkingAutoFloorsBG"] = a2.number_input("Auto Park (BG)", min_value=0, value=int(DEFAULT["parkingAutoFloorsBG"]), step=1)
 
     st.caption("Floor Plates (m²)")
     f1, f2, f3 = st.columns(3)
-    s["mainFloorPlate"] = f1.number_input("Main Plate", min_value=0.0, value=DEFAULT["mainFloorPlate"], step=10.0)
-    s["parkingConPlate"] = f2.number_input("Park Plate (Conv)", min_value=0.0, value=DEFAULT["parkingConPlate"], step=10.0)
-    s["parkingAutoPlate"] = f3.number_input("Park Plate (Auto)", min_value=0.0, value=DEFAULT["parkingAutoPlate"], step=10.0)
+    s["mainFloorPlate"]   = f1.number_input("Main Plate",          min_value=0.0, value=float(DEFAULT["mainFloorPlate"]),   step=10.0)
+    s["parkingConPlate"]  = f2.number_input("Park Plate (Conv)",   min_value=0.0, value=float(DEFAULT["parkingConPlate"]),  step=10.0)
+    s["parkingAutoPlate"] = f3.number_input("Park Plate (Auto)",   min_value=0.0, value=float(DEFAULT["parkingAutoPlate"]), step=10.0)
 
     st.caption("FAR flags")
-    s["countParkingInFAR"] = st.selectbox("Count Parking in FAR?", ["Yes", "No"], index=0) == "Yes"
-    s["countBasementInFAR"] = st.selectbox("Count Basement in FAR?", ["Yes", "No"], index=0) == "Yes"
+    s["countParkingInFAR"]   = st.selectbox("Count Parking in FAR?",   ["Yes", "No"], index=0) == "Yes"
+    s["countBasementInFAR"]  = st.selectbox("Count Basement in FAR?",  ["Yes", "No"], index=0) == "Yes"
 
     st.divider()
     st.subheader("Parking Efficiency")
     e1, e2, e3 = st.columns(3)
-    s["bayConv"] = e1.number_input("Conv Bay (m²) — net", min_value=1.0, value=DEFAULT["bayConv"], step=0.5)
-    s["circConvPct"] = e2.number_input("Conv Circ (%)", min_value=0.0, max_value=100.0, value=DEFAULT["circConvPct"]*100, step=1.0) / 100.0
-    # show eff
+    s["bayConv"] = e1.number_input("Conv Bay (m²) — net", min_value=1.0, value=float(DEFAULT["bayConv"]), step=0.5)
+    s["circConvPct"] = e2.number_input("Conv Circ (%)",   min_value=0.0, max_value=100.0, value=float(DEFAULT["circConvPct"])*100, step=1.0) / 100.0
     st.caption(f"eff Conv = {nf(s['bayConv']*(1+s['circConvPct']))} m²/คัน")
 
-    s["bayAuto"] = e1.number_input("Auto Bay (m²) — net", min_value=1.0, value=DEFAULT["bayAuto"], step=0.5, key="autobay")
-    s["circAutoPct"] = e2.number_input("Auto Circ (%)", min_value=0.0, max_value=100.0, value=DEFAULT["circAutoPct"]*100, step=1.0, key="autocirc") / 100.0
+    s["bayAuto"] = e1.number_input("Auto Bay (m²) — net", min_value=1.0, value=float(DEFAULT["bayAuto"]), step=0.5, key="autobay")
+    s["circAutoPct"] = e2.number_input("Auto Circ (%)",   min_value=0.0, max_value=100.0, value=float(DEFAULT["circAutoPct"])*100, step=1.0, key="autocirc") / 100.0
     st.caption(f"eff Auto = {nf(s['bayAuto']*(1+s['circAutoPct']))} m²/คัน")
 
     st.caption("Open-lot (ไม่นับ FAR)")
     o1, o2, o3 = st.columns(3)
-    s["openLotArea"] = o1.number_input("Open-lot Area (m²)", min_value=0.0, value=DEFAULT["openLotArea"], step=10.0)
-    s["openLotBay"] = o2.number_input("Open-lot Bay (m²/คัน)", min_value=1.0, value=DEFAULT["openLotBay"], step=0.5)
-    s["openLotCircPct"] = o3.number_input("Open-lot Circ (%)", min_value=0.0, max_value=100.0, value=DEFAULT["openLotCircPct"]*100, step=1.0) / 100.0
+    s["openLotArea"]    = o1.number_input("Open-lot Area (m²)",   min_value=0.0, value=float(DEFAULT["openLotArea"]), step=10.0)
+    s["openLotBay"]     = o2.number_input("Open-lot Bay (m²/คัน)",min_value=1.0, value=float(DEFAULT["openLotBay"]),  step=0.5)
+    s["openLotCircPct"] = o3.number_input("Open-lot Circ (%)",    min_value=0.0, max_value=100.0, value=float(DEFAULT["openLotCircPct"])*100, step=1.0) / 100.0
     st.caption(f"eff Open-lot = {nf(s['openLotBay']*(1+s['openLotCircPct']))} m²/คัน")
 
     st.divider()
     st.subheader("Costs & Budget (THB)")
     c1, c2 = st.columns(2)
-    s["costArchPerSqm"] = c1.number_input("Architecture (฿/m²)", min_value=0.0, value=DEFAULT["costArchPerSqm"], step=100.0)
-    s["costStructPerSqm"] = c2.number_input("Structure (฿/m²)", min_value=0.0, value=DEFAULT["costStructPerSqm"], step=100.0)
-    s["costMEPPerSqm"]   = c1.number_input("MEP (฿/m²)", min_value=0.0, value=DEFAULT["costMEPPerSqm"], step=100.0)
-    s["costGreenPerSqm"] = c2.number_input("Green (฿/m²)", min_value=0.0, value=DEFAULT["costGreenPerSqm"], step=100.0)
+    s["costArchPerSqm"] = c1.number_input("Architecture (฿/m²)",  min_value=0.0, value=float(DEFAULT["costArchPerSqm"]), step=100.0)
+    s["costStructPerSqm"] = c2.number_input("Structure (฿/m²)",   min_value=0.0, value=float(DEFAULT["costStructPerSqm"]), step=100.0)
+    s["costMEPPerSqm"]   = c1.number_input("MEP (฿/m²)",          min_value=0.0, value=float(DEFAULT["costMEPPerSqm"]),   step=100.0)
+    s["costGreenPerSqm"] = c2.number_input("Green (฿/m²)",        min_value=0.0, value=float(DEFAULT["costGreenPerSqm"]), step=100.0)
 
-    s["costConventionalPerCar"] = c1.number_input("Parking (Conv) (฿/car)", min_value=0.0, value=DEFAULT["costConventionalPerCar"], step=1000.0)
-    s["costAutoPerCar"]         = c2.number_input("Parking (Auto) (฿/car)", min_value=0.0, value=DEFAULT["costAutoPerCar"], step=1000.0)
-    s["costOpenLotPerCar"]      = c1.number_input("Parking (Open-lot) (฿/car)", min_value=0.0, value=DEFAULT["costOpenLotPerCar"], step=1000.0)
+    s["costConventionalPerCar"] = c1.number_input("Parking (Conv) (฿/car)",   min_value=0.0, value=float(DEFAULT["costConventionalPerCar"]), step=1000.0)
+    s["costAutoPerCar"]         = c2.number_input("Parking (Auto) (฿/car)",   min_value=0.0, value=float(DEFAULT["costAutoPerCar"]),         step=1000.0)
+    s["costOpenLotPerCar"]      = c1.number_input("Parking (Open-lot) (฿/car)",min_value=0.0, value=float(DEFAULT["costOpenLotPerCar"]),     step=1000.0)
 
-    s["budget"] = st.number_input("Budget (฿)", min_value=0.0, value=DEFAULT["budget"], step=1_000_000.0)
-
+    s["budget"] = st.number_input("Budget (฿)", min_value=0.0, value=float(DEFAULT["budget"]), step=1_000_000.0)
+    
 # Compute
 d = compute(s)
 
