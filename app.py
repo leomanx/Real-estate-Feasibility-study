@@ -1,573 +1,1018 @@
-# app.py
-import math
-import io
-import json
-import pandas as pd
-import streamlit as st
-import plotly.express as px
-import plotly.graph_objects as go
+// App (single file) — minimal monochrome theme, buildable-aware main plate, open-lot parking
+import React, { useMemo, useRef } from "react";
+import {
+  Download, Ruler, Building2, Car, Calculator, Factory,
+  TrendingUp, TriangleAlert, Plus, Trash2, FileUp, BarChart3, LayoutGrid
+} from "lucide-react";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
 
-# =============================
-# Helpers
-# =============================
-def nf(n, digits=2):
-    try:
-        x = float(n)
-        return f"{x:,.{digits}f}"
-    except:
-        return "–"
+// =============================================================
+// Helpers
+// =============================================================
+const nf = (n, digits = 2) =>
+  isFinite(Number(n)) ? Number(n).toLocaleString(undefined, { maximumFractionDigits: digits }) : "–";
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const currencySymbol = (cur) => (cur === "USD" ? "$" : "฿");
 
-def clamp(v, lo, hi):
-    return min(hi, max(lo, v))
-
-def create_csv(rows):
-    if not rows:
-        return ""
-    headers = list(rows[0].keys())
-    lines = [",".join(headers)]
-    for r in rows:
-        lines.append(",".join(str(r.get(h, "")) for h in headers))
-    return "\n".join(lines)
-
-def calc_disabled_parking(total_cars):
-    if total_cars <= 0: return 0
-    if total_cars <= 50: return 2
-    if total_cars <= 100: return 3
-    extra_hundreds = math.ceil((total_cars - 100) / 100)
-    return 3 + max(0, extra_hundreds)
-
-def compute_far_counted(mainAG, mainBG, pcAG, pcBG, paAG, paBG, countParking, countBasement):
-    far = 0
-    far += mainAG + (mainBG if countBasement else 0)
-    if countParking:
-        far += pcAG + (pcBG if countBasement else 0)
-        far += paAG + (paBG if countBasement else 0)
-    return far
-
-# =============================
-# Rules / Defaults
-# =============================
-BUILDING_TYPES = ["Housing", "Hi-Rise", "Low-Rise", "Public Building", "Office Building", "Hotel"]
-RULES = {
-    "base": { "farRange": [1, 10] },
-    "building": {
-        "Housing": {"minOSR": 30, "greenPctOfOSR": None},
-        "Hi-Rise": {"minOSR": 10, "greenPctOfOSR": 50},
-        "Low-Rise": {"minOSR": 10, "greenPctOfOSR": 50},
-        "Public Building": {"minOSR": None, "greenPctOfOSR": None},
-        "Office Building": {"minOSR": None, "greenPctOfOSR": None},
-        "Hotel": {"minOSR": 10, "greenPctOfOSR": 40},
-    }
+function createCSV(rows) {
+  if (!rows || rows.length === 0) return "";
+  const headers = Object.keys(rows[0]);
+  const lines = [headers.join(","), ...rows.map((r) => headers.map((h) => r[h]).join(","))];
+  return lines.join("\n");
 }
 
-DEFAULT = dict(
-    # Core site & zoning
-    siteArea=8000.0,
-    far=5.0,
-    bType="Housing",
-    osr=30.0,
-    greenPctOfOSR=40.0,
+// Disabled parking rule
+function calcDisabledParking(totalCars) {
+  if (totalCars <= 0) return 0;
+  if (totalCars <= 50) return 2;
+  if (totalCars <= 100) return 3;
+  const extraHundreds = Math.ceil((totalCars - 100) / 100);
+  return 3 + Math.max(0, extraHundreds);
+}
 
-    # Geometry
-    mainFloorsAG=20, mainFloorsBG=0,
-    parkingConFloorsAG=3, parkingConFloorsBG=0,
-    parkingAutoFloorsAG=0, parkingAutoFloorsBG=0,
-    ftf=3.2, maxHeight=120.0,
+// FAR counting helper (no open-lot)
+function computeFarCounted(mainAG, mainBG, pcAG, pcBG, paAG, paBG, countParking, countBasement) {
+  let farCounted = 0;
+  farCounted += mainAG + (countBasement ? mainBG : 0);
+  if (countParking) {
+    farCounted += pcAG + (countBasement ? pcBG : 0);
+    farCounted += paAG + (countBasement ? paBG : 0);
+  }
+  return farCounted;
+}
 
-    # Plates (m²)
-    mainFloorPlate=1500.0,
-    parkingConPlate=1200.0,
-    parkingAutoPlate=800.0,
+// =============================================================
+// Rules
+// =============================================================
+const BUILDING_TYPES = ["Housing", "Hi-Rise", "Low-Rise", "Public Building", "Office Building", "Hotel"];
+const RULES = {
+  base: { farRange: [1, 10] },
+  building: {
+    Housing: { minOSR: 30, greenPctOfOSR: null },
+    "Hi-Rise": { minOSR: 10, greenPctOfOSR: 50 },
+    "Low-Rise": { minOSR: 10, greenPctOfOSR: 50 },
+    "Public Building": { minOSR: null, greenPctOfOSR: null },
+    "Office Building": { minOSR: null, greenPctOfOSR: null },
+    Hotel: { minOSR: 10, greenPctOfOSR: 40 },
+  },
+};
+const suggestedOSR = (type) => RULES.building[type]?.minOSR ?? 15;
+const suggestedGreenPct = (type) => RULES.building[type]?.greenPctOfOSR ?? 40;
 
-    # Parking efficiency (structured)
-    bayConv=25.0,    circConvPct=0.0,
-    bayAuto=16.0,    circAutoPct=0.0,
+// =============================================================
+// Scenario (with site dims & setbacks + main plate mode)
+// =============================================================
+const DEFAULT_SCENARIO = {
+  // Core site & zoning
+  name: "Base",
+  siteArea: 8000,
+  far: 5,
+  bType: "Housing",
+  osr: 30,
+  greenPctOfOSR: 40,
 
-    # Open-lot (not FAR)
-    openLotArea=0.0, openLotBay=25.0, openLotCircPct=0.0,
+  // Site dims & setbacks (for diagram + buildable calc)
+  siteWidth: 80,   // m
+  siteDepth: 100,  // m
+  setbackFront: 6, // m
+  setbackRear: 6,  // m
+  setbackSideL: 3, // m
+  setbackSideR: 3, // m
 
-    # Efficiency ratios
-    nlaPctOfCFA=70.0,
-    nsaPctOfCFA=80.0,
-    gfaOverCfaPct=95.0,
+  // Geometry
+  mainFloorsAG: 20,
+  mainFloorsBG: 0,
+  parkingConFloorsAG: 3,
+  parkingConFloorsBG: 0,
+  parkingAutoFloorsAG: 0,
+  parkingAutoFloorsBG: 0,
+  ftf: 3.2,
+  maxHeight: 120,
 
-    # FAR toggles
-    countParkingInFAR=True,
-    countBasementInFAR=False,
+  // Main plate mode
+  mainPlateMode: "abs", // "abs" | "pct"
+  mainPlatePct: 80,     // used when mode="pct"
 
-    # Costs (THB)
-    costArchPerSqm=16000.0,
-    costStructPerSqm=22000.0,
-    costMEPPerSqm=20000.0,
-    costGreenPerSqm=4500.0,
-    costConventionalPerCar=125000.0,
-    costAutoPerCar=432000.0,
-    costOpenLotPerCar=60000.0,
+  // Plates (m²)
+  mainFloorPlate: 1500,
+  parkingConPlate: 1200,
+  parkingAutoPlate: 800,
 
-    # Custom cost table (editable)
-    customCosts=[],
+  // Parking efficiency (structured)
+  bayConv: 25,
+  circConvPct: 0.0,
+  bayAuto: 16,
+  circAutoPct: 0.0,
 
-    # Budget
-    budget=500_000_000.0,
+  // Open-lot (outside building; not FAR)
+  openLotArea: 0,
+  openLotBay: 25,
+  openLotCircPct: 0.0,
 
-    # --- New: Site dims & setbacks (for diagram; siteArea is authoritative) ---
-    siteWidth=80.0,    # m
-    siteDepth=100.0,   # m
-    setbackFront=6.0,  # m
-    setbackRear=6.0,   # m
-    setbackSideL=3.0,  # m
-    setbackSideR=3.0,  # m
-)
+  // Eff ratios
+  nlaPctOfCFA: 70,
+  nsaPctOfCFA: 80,
+  gfaOverCfaPct: 95,
 
-# =============================
-# Compute block
-# =============================
-def compute(state: dict):
-    far_min, far_max = RULES["base"]["farRange"]
-    far = clamp(float(state["far"]), far_min, far_max)
-    maxGFA = state["siteArea"] * far
+  // FAR flags
+  countParkingInFAR: true,
+  countBasementInFAR: false,
 
-    # OSR & Green
-    openSpaceArea = (state["osr"] / 100.0) * state["siteArea"]
-    greenArea = (state["greenPctOfOSR"] / 100.0) * openSpaceArea
+  // Costs (THB)
+  costArchPerSqm: 16000,
+  costStructPerSqm: 22000,
+  costMEPPerSqm: 20000,
+  costGreenPerSqm: 4500,
+  costConventionalPerCar: 125000,
+  costAutoPerCar: 432000,
+  costOpenLotPerCar: 60000,
 
-    # CFA
-    mainCFA_AG = state["mainFloorsAG"] * state["mainFloorPlate"]
-    mainCFA_BG = state["mainFloorsBG"] * state["mainFloorPlate"]
-    parkConCFA_AG = state["parkingConFloorsAG"] * state["parkingConPlate"]
-    parkConCFA_BG = state["parkingConFloorsBG"] * state["parkingConPlate"]
-    parkAutoCFA_AG = state["parkingAutoFloorsAG"] * state["parkingAutoPlate"]
-    parkAutoCFA_BG = state["parkingAutoFloorsBG"] * state["parkingAutoPlate"]
+  customCosts: [],
+  budget: 500000000,
+};
 
-    mainCFA = mainCFA_AG + mainCFA_BG
-    parkConCFA = parkConCFA_AG + parkConCFA_BG
-    parkAutoCFA = parkAutoCFA_AG + parkAutoCFA_BG
-    totalCFA = mainCFA + parkConCFA + parkAutoCFA
+// =============================================================
+// Compute hook
+// =============================================================
+function useScenarioCompute(state) {
+  const effAreaConCar = useMemo(() => state.bayConv * (1 + state.circConvPct), [state.bayConv, state.circConvPct]);
+  const effAreaAutoCar = useMemo(() => state.bayAuto * (1 + state.circAutoPct), [state.bayAuto, state.circAutoPct]);
+  const effAreaOpenCar = useMemo(() => state.openLotBay * (1 + state.openLotCircPct), [state.openLotBay, state.openLotCircPct]);
 
-    # Height
-    estHeight = state["ftf"] * (state["mainFloorsAG"] + state["parkingConFloorsAG"] + state["parkingAutoFloorsAG"])
-    heightOk = estHeight <= state["maxHeight"]
+  const derived = useMemo(() => {
+    const far = clamp(state.far, RULES.base.farRange[0], RULES.base.farRange[1]);
+    const maxGFA = state.siteArea * far;
 
-    # Parking eff area / car
-    effAreaConCar  = state["bayConv"] * (1 + state["circConvPct"])
-    effAreaAutoCar = state["bayAuto"] * (1 + state["circAutoPct"])
-    effAreaOpenCar = state["openLotBay"] * (1 + state["openLotCircPct"])
+    // Buildable area from dims & setbacks
+    const width = Math.max(0, Number(state.siteWidth || 0));
+    const depth = Math.max(0, Number(state.siteDepth || 0));
+    const sbF = Math.max(0, Number(state.setbackFront || 0));
+    const sbR = Math.max(0, Number(state.setbackRear || 0));
+    const sbL = Math.max(0, Number(state.setbackSideL || 0));
+    const sbRR = Math.max(0, Number(state.setbackSideR || 0));
+    const buildableW = Math.max(0, width - (sbL + sbRR));
+    const buildableD = Math.max(0, depth - (sbF + sbR));
+    const buildableArea = buildableW * buildableD;
 
-    convCarsPerFloor = math.floor(state["parkingConPlate"] / max(1, effAreaConCar))
-    autoCarsPerFloor = math.floor(state["parkingAutoPlate"] / max(1, effAreaAutoCar))
+    // OSR & Green
+    const openSpaceArea = (state.osr / 100) * state.siteArea;
+    const greenArea = (state.greenPctOfOSR / 100) * openSpaceArea;
 
-    totalConvCars = convCarsPerFloor * (state["parkingConFloorsAG"] + state["parkingConFloorsBG"])
-    totalAutoCars = autoCarsPerFloor * (state["parkingAutoFloorsAG"] + state["parkingAutoFloorsBG"])
-    openLotCars   = math.floor(state["openLotArea"] / max(1, effAreaOpenCar))
+    // Main plate absolute (abs or % of buildable)
+    const mainPlateAbs =
+      state.mainPlateMode === "pct"
+        ? Math.max(0, Math.min(buildableArea, (Number(state.mainPlatePct || 0) / 100) * buildableArea))
+        : Math.max(0, Number(state.mainFloorPlate || 0));
 
-    totalCars = totalConvCars + totalAutoCars + openLotCars
-    disabledCars = calc_disabled_parking(totalCars)
+    // CFA
+    const mainCFA_AG = state.mainFloorsAG * mainPlateAbs;
+    const mainCFA_BG = state.mainFloorsBG * mainPlateAbs;
+    const parkConCFA_AG = state.parkingConFloorsAG * state.parkingConPlate;
+    const parkConCFA_BG = state.parkingConFloorsBG * state.parkingConPlate;
+    const parkAutoCFA_AG = state.parkingAutoFloorsAG * state.parkingAutoPlate;
+    const parkAutoCFA_BG = state.parkingAutoFloorsBG * state.parkingAutoPlate;
 
-    # FAR-counted (no open-lot)
-    farCounted = compute_far_counted(
-        mainCFA_AG, mainCFA_BG,
-        parkConCFA_AG, parkConCFA_BG,
-        parkAutoCFA_AG, parkAutoCFA_BG,
-        state["countParkingInFAR"], state["countBasementInFAR"]
-    )
-    farOk = farCounted <= maxGFA
+    const mainCFA = mainCFA_AG + mainCFA_BG;
+    const parkConCFA = parkConCFA_AG + parkConCFA_BG;
+    const parkAutoCFA = parkAutoCFA_AG + parkAutoCFA_BG;
+    const totalCFA = mainCFA + parkConCFA + parkAutoCFA;
 
-    # Efficiency (areas)
-    nla = (state["nlaPctOfCFA"] / 100.0) * totalCFA
-    nsa = (state["nsaPctOfCFA"] / 100.0) * totalCFA
-    gfa = (state["gfaOverCfaPct"] / 100.0) * totalCFA
+    // Height (AG only)
+    const estHeight = state.ftf * (state.mainFloorsAG + state.parkingConFloorsAG + state.parkingAutoFloorsAG);
+    const heightOk = estHeight <= state.maxHeight;
 
-    # Ratios (requested)
-    ratio_nla_cfa = nla / totalCFA if totalCFA > 0 else 0
-    ratio_nsa_gfa = nsa / gfa if gfa > 0 else 0
-    ratio_nsa_cfa = nsa / totalCFA if totalCFA > 0 else 0
-    ratio_nla_gfa = nla / gfa if gfa > 0 else 0
+    // Parking counts
+    const convCarsPerFloor = Math.floor(state.parkingConPlate / Math.max(1, effAreaConCar));
+    const autoCarsPerFloor = Math.floor(state.parkingAutoPlate / Math.max(1, effAreaAutoCar));
+    const totalConvCars = convCarsPerFloor * (state.parkingConFloorsAG + state.parkingConFloorsBG);
+    const totalAutoCars = autoCarsPerFloor * (state.parkingAutoFloorsAG + state.parkingAutoFloorsBG);
+    const openLotCars = Math.floor(state.openLotArea / Math.max(1, effAreaOpenCar));
+    const totalCars = totalConvCars + totalAutoCars + openLotCars;
+    const disabledCars = calcDisabledParking(totalCars);
 
-    # Costs
-    baseCostPerSqm = state["costArchPerSqm"] + state["costStructPerSqm"] + state["costMEPPerSqm"]
-    constructionCost = totalCFA * baseCostPerSqm
-    greenCost = greenArea * state["costGreenPerSqm"]
-    parkingCost = (
-        totalConvCars * state["costConventionalPerCar"] +
-        totalAutoCars * state["costAutoPerCar"] +
-        openLotCars   * state["costOpenLotPerCar"]
-    )
+    // FAR-counted (no open-lot)
+    const farCounted = computeFarCounted(
+      mainCFA_AG, mainCFA_BG, parkConCFA_AG, parkConCFA_BG, parkAutoCFA_AG, parkAutoCFA_BG,
+      state.countParkingInFAR, state.countBasementInFAR
+    );
+    const farOk = farCounted <= maxGFA;
 
-    # Custom costs
-    customCostTotal = 0.0
-    for i in state.get("customCosts", []):
-        kind = i.get("kind", "lump_sum")
-        rate = float(i.get("rate", 0.0) or 0.0)
-        if kind == "per_sqm":
-            customCostTotal += rate * totalCFA
-        elif kind == "per_car_conv":
-            customCostTotal += rate * totalConvCars
-        elif kind == "per_car_auto":
-            customCostTotal += rate * totalAutoCars
-        else:
-            customCostTotal += rate
+    // Efficiency
+    const nla = (state.nlaPctOfCFA / 100) * totalCFA;
+    const nsa = (state.nsaPctOfCFA / 100) * totalCFA;
+    const gfa = (state.gfaOverCfaPct / 100) * totalCFA;
 
-    capexTotal = constructionCost + greenCost + parkingCost + customCostTotal
-    budgetOk = (capexTotal <= state["budget"]) if state["budget"] > 0 else True
+    // Ratios
+    const ratioNLA_CFA = totalCFA > 0 ? nla / totalCFA : 0;
+    const ratioNSA_GFA = gfa > 0 ? nsa / gfa : 0;
+    const ratioNSA_CFA = totalCFA > 0 ? nsa / totalCFA : 0;
+    const ratioNLA_GFA = gfa > 0 ? nla / gfa : 0;
 
-    # Legal
-    rule = RULES["building"].get(state["bType"], {})
-    osrOk = (state["osr"] >= rule.get("minOSR")) if (rule.get("minOSR") is not None) else True
-    greenRule = rule.get("greenPctOfOSR")
-    greenPctOk = (state["greenPctOfOSR"] >= greenRule) if (greenRule is not None) else True
+    // Costs
+    const baseCostPerSqm = state.costArchPerSqm + state.costStructPerSqm + state.costMEPPerSqm;
+    const constructionCost = totalCFA * baseCostPerSqm;
+    const greenCost = greenArea * state.costGreenPerSqm;
+    const parkingCost =
+      totalConvCars * state.costConventionalPerCar +
+      totalAutoCars * state.costAutoPerCar +
+      openLotCars * state.costOpenLotPerCar;
 
-    # Site dims & setbacks (diagram only; siteArea is authoritative)
-    width  = max(0.0, float(state["siteWidth"]))
-    depth  = max(0.0, float(state["siteDepth"]))
-    area_by_dims = width * depth
-    # scale factor to respect siteArea as the truth (for diagram label)
-    scale_info = None
-    if area_by_dims <= 0:
-        buildableW = buildableD = buildableArea = 0.0
-    else:
-        # setbacks
-        bw = max(0.0, width - (state["setbackSideL"] + state["setbackSideR"]))
-        bd = max(0.0, depth - (state["setbackFront"] + state["setbackRear"]))
-        buildableW, buildableD = bw, bd
-        buildableArea = bw * bd
-        if abs(area_by_dims - state["siteArea"]) > 1e-6:
-            scale_info = dict(
-                width=width, depth=depth, area_dims=area_by_dims, area_true=state["siteArea"]
-            )
+    const customCostTotal = (state.customCosts || []).reduce((sum, i) => {
+      if (i.kind === "per_sqm") return sum + i.rate * totalCFA;
+      if (i.kind === "per_car_conv") return sum + i.rate * totalConvCars;
+      if (i.kind === "per_car_auto") return sum + i.rate * totalAutoCars;
+      return sum + i.rate;
+    }, 0);
+
+    const capexTotal = constructionCost + greenCost + parkingCost + customCostTotal;
+    const budgetOk = state.budget > 0 ? capexTotal <= state.budget : true;
+
+    // Legal
+    const rule = RULES.building[state.bType] || {};
+    const osrOk = rule.minOSR != null ? state.osr >= rule.minOSR : true;
+    const greenRule = rule.greenPctOfOSR;
+    const greenPctOk = greenRule != null ? state.greenPctOfOSR >= greenRule : true;
 
     return {
-        "maxGFA": maxGFA,
-        "openSpaceArea": openSpaceArea,
-        "greenArea": greenArea,
-        "mainCFA_AG": mainCFA_AG,
-        "mainCFA_BG": mainCFA_BG,
-        "parkConCFA": parkConCFA,
-        "parkAutoCFA": parkAutoCFA,
-        "totalCFA": totalCFA,
-        "farCounted": farCounted,
-        "farOk": farOk,
-        "estHeight": estHeight,
-        "heightOk": heightOk,
+      // zoning
+      maxGFA, openSpaceArea, greenArea,
+      // buildable
+      buildableW, buildableD, buildableArea, mainPlateAbs,
+      // cfa
+      mainCFA_AG, mainCFA_BG, mainCFA,
+      parkConCFA_AG, parkConCFA_BG, parkConCFA,
+      parkAutoCFA_AG, parkAutoCFA_BG, parkAutoCFA,
+      totalCFA,
+      // checks
+      farCounted, farOk, estHeight, heightOk, osrOk, greenPctOk,
+      // parking
+      convCarsPerFloor, autoCarsPerFloor, totalConvCars, totalAutoCars, openLotCars, totalCars, disabledCars,
+      // eff
+      nla, nsa, gfa,
+      ratioNLA_CFA, ratioNSA_GFA, ratioNSA_CFA, ratioNLA_GFA,
+      // costs
+      baseCostPerSqm, constructionCost, greenCost, parkingCost, customCostTotal, capexTotal, budgetOk,
+      // helpers
+      effAreaOpenCar,
+    };
+  }, [state, effAreaConCar, effAreaAutoCar, effAreaOpenCar]);
 
-        "convCarsPerFloor": convCarsPerFloor,
-        "autoCarsPerFloor": autoCarsPerFloor,
-        "totalConvCars": totalConvCars,
-        "totalAutoCars": totalAutoCars,
-        "openLotCars": openLotCars,
-        "totalCars": totalCars,
-        "disabledCars": disabledCars,
-
-        "nla": nla, "nsa": nsa, "gfa": gfa,
-        "ratio_nla_cfa": ratio_nla_cfa,
-        "ratio_nsa_gfa": ratio_nsa_gfa,
-        "ratio_nsa_cfa": ratio_nsa_cfa,
-        "ratio_nla_gfa": ratio_nla_gfa,
-
-        "baseCostPerSqm": baseCostPerSqm,
-        "constructionCost": constructionCost,
-        "greenCost": greenCost,
-        "parkingCost": parkingCost,
-        "customCostTotal": customCostTotal,
-        "capexTotal": capexTotal,
-        "budgetOk": budgetOk,
-
-        "osrOk": osrOk, "greenPctOk": greenPctOk,
-
-        # for diagram
-        "siteWidth": width, "siteDepth": depth,
-        "buildableW": buildableW if area_by_dims>0 else 0,
-        "buildableD": buildableD if area_by_dims>0 else 0,
-        "buildableArea": buildableArea if area_by_dims>0 else 0,
-        "scaleInfo": scale_info,
-    }
-
-# =============================
-# UI
-# =============================
-st.set_page_config(page_title="Feasibility App (TH) — Streamlit", layout="wide")
-
-# --- (อ็อปชัน) CSS การ์ด ---
-st.markdown("""
-<style>
-.block-container { padding-top: 1.25rem; padding-bottom: 2rem; }
-.stApp header { background: transparent; }
-.card {
-  background: var(--secondary-background-color);
-  border: 1px solid rgba(0,0,0,0.06);
-  border-radius: 16px;
-  padding: 16px;
-  box-shadow: 0 6px 16px rgba(0,0,0,0.06);
+  return { effAreaConCar, effAreaAutoCar, effAreaOpenCar, derived };
 }
-.stButton>button { border-radius: 12px !important; padding: 0.55rem 1rem !important; font-weight: 600 !important; }
-[data-testid="stMetricValue"] { font-weight: 700; }
-</style>
-""", unsafe_allow_html=True)
 
-st.title("🏗️ Feasibility App (TH) — Streamlit (Minimal Mono Theme)")
+// =============================================================
+// Scenario Card (single-scenario UI)
+// =============================================================
+function ScenarioCard({ scenario, onUpdate, onRemove, currency = "THB" }) {
+  const { effAreaConCar, effAreaAutoCar, effAreaOpenCar, derived } = useScenarioCompute(scenario);
+  const rule = RULES.building[scenario.bType] || {};
+  const farMin = RULES.base.farRange[0];
+  const farMax = RULES.base.farRange[1];
 
-# Sidebar inputs
-with st.sidebar:
-    st.header("Scenario")
-    s = {**DEFAULT}
+  const warnings = [];
+  if (!derived.farOk) warnings.push("FAR เกิน Max GFA");
+  if (!derived.heightOk) warnings.push("ความสูงเกิน Max Height");
+  if (rule.minOSR != null && !derived.osrOk) warnings.push(`OSR ต่ำกว่าขั้นต่ำ ${rule.minOSR}%`);
+  if (rule.greenPctOfOSR != null && !derived.greenPctOk) warnings.push(`Green % ต่ำกว่าขั้นต่ำ ${rule.greenPctOfOSR}% ของ OSR`);
+  if (!derived.budgetOk) warnings.push("CAPEX เกินงบประมาณ");
 
-    colA, colB = st.columns(2)
-    s["siteArea"] = colA.number_input("Site Area (m²)", min_value=0.0, value=float(DEFAULT["siteArea"]), step=100.0)
-    s["far"] = colB.number_input("FAR (1–10)", min_value=1.0, max_value=10.0, value=float(DEFAULT["far"]), step=0.1)
+  const curSymbol = currencySymbol(currency);
+  const sqmLabel = `${curSymbol}/m²`;
 
-    s["bType"] = st.selectbox("Building Type", BUILDING_TYPES, index=BUILDING_TYPES.index(DEFAULT["bType"]))
-    s["osr"] = st.number_input("OSR (%)", min_value=0.0, max_value=100.0, value=float(DEFAULT["osr"]), step=1.0)
-    s["greenPctOfOSR"] = st.number_input("Green (% of OSR)", min_value=0.0, max_value=100.0, value=float(DEFAULT["greenPctOfOSR"]), step=1.0)
+  const capexData = useMemo(
+    () => [
+      { name: "Construction", value: Math.max(0, derived.constructionCost) },
+      { name: "Green",        value: Math.max(0, derived.greenCost) },
+      { name: "Parking",      value: Math.max(0, derived.parkingCost) },
+      { name: "Custom",       value: Math.max(0, derived.customCostTotal) },
+    ],
+    [derived.constructionCost, derived.greenCost, derived.parkingCost, derived.customCostTotal]
+  );
 
-    st.divider()
-    st.subheader("Geometry & Height")
-    g1, g2, g3 = st.columns(3)
-    s["mainFloorsAG"] = g1.number_input("Main Floors (AG)", min_value=0, value=int(DEFAULT["mainFloorsAG"]), step=1)
-    s["mainFloorsBG"] = g2.number_input("Main Floors (BG)", min_value=0, value=int(DEFAULT["mainFloorsBG"]), step=1)
-    s["ftf"] = g3.number_input("F2F (m)", min_value=0.0, value=float(DEFAULT["ftf"]), step=0.1)
+  // Monochrome palette
+  const CAPEX_COLOR_BY_NAME = {
+    Construction: "#111827", // black
+    Green:        "#6b7280", // gray-500/600
+    Parking:      "#9ca3af", // gray-400
+    Custom:       "#d1d5db", // gray-300
+  };
+  const fileRef = useRef(null);
 
-    p1, p2, p3 = st.columns(3)
-    s["parkingConFloorsAG"] = p1.number_input("Park Conv (AG)", min_value=0, value=int(DEFAULT["parkingConFloorsAG"]), step=1)
-    s["parkingConFloorsBG"] = p2.number_input("Park Conv (BG)", min_value=0, value=int(DEFAULT["parkingConFloorsBG"]), step=1)
-    s["maxHeight"] = p3.number_input("Max Height (m)", min_value=0.0, value=float(DEFAULT["maxHeight"]), step=1.0)
+  const handleExportCSV = () => {
+    const s = scenario;
+    const rows = Object.entries(s)
+      .filter(([k]) => k !== "id")
+      .map(([Field, Value]) => ({
+        Field,
+        Value: Value && typeof Value === "object" ? JSON.stringify(Value) : Value,
+      }));
+    const csv = createCSV(rows);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `${(s.name || "scenario").replace(/\s+/g, "_")}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    link.parentNode?.removeChild(link);
+  };
 
-    a1, a2 = st.columns(2)
-    s["parkingAutoFloorsAG"] = a1.number_input("Auto Park (AG)", min_value=0, value=int(DEFAULT["parkingAutoFloorsAG"]), step=1)
-    s["parkingAutoFloorsBG"] = a2.number_input("Auto Park (BG)", min_value=0, value=int(DEFAULT["parkingAutoFloorsBG"]), step=1)
+  const handleImportCSV = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result || "");
+        const lines = text.split(/\r?\n/).filter(Boolean);
+        const entries = lines.slice(1).map((line) => {
+          const idx = line.indexOf(",");
+          if (idx < 0) return null;
+          const k = line.slice(0, idx).trim();
+          const v = line.slice(idx + 1).trim();
+          let parsed = v;
+          if (/^\s*[\{\[]/.test(v)) {
+            try { parsed = JSON.parse(v); } catch {}
+          } else {
+            const num = Number(v);
+            if (isFinite(num) && v.match(/^[-+]?\d+(\.\d+)?$/)) parsed = num;
+          }
+          return [k, parsed];
+        }).filter(Boolean);
+        const patch = Object.fromEntries(entries);
+        onUpdate(scenario.id, patch);
+      } catch (e) {
+        alert("Import failed: " + e);
+      }
+    };
+    reader.readAsText(file);
+  };
 
-    st.caption("Floor Plates (m²)")
-    f1, f2, f3 = st.columns(3)
-    s["mainFloorPlate"] = f1.number_input("Main Plate", min_value=0.0, value=float(DEFAULT["mainFloorPlate"]), step=10.0)
-    s["parkingConPlate"] = f2.number_input("Park Plate (Conv)", min_value=0.0, value=float(DEFAULT["parkingConPlate"]), step=10.0)
-    s["parkingAutoPlate"] = f3.number_input("Park Plate (Auto)", min_value=0.0, value=float(DEFAULT["parkingAutoPlate"]), step=10.0)
+  return (
+    <div className="p-4 rounded-2xl bg-[#f5f5f5]">
+      <div className="p-4 rounded-2xl bg-white shadow border space-y-4">
+        <div className="flex items-center gap-3">
+          <h2 className="font-semibold">Scenario: {scenario.name}</h2>
+          <button onClick={() => onRemove?.(scenario.id)} className="ml-auto text-neutral-500 hover:text-red-600">
+            <Trash2 className="w-5 h-5" />
+          </button>
+        </div>
 
-    st.caption("FAR flags")
-    s["countParkingInFAR"] = st.selectbox("Count Parking in FAR?", ["Yes", "No"], index=0) == "Yes"
-    s["countBasementInFAR"] = st.selectbox("Count Basement in FAR?", ["Yes", "No"], index=0) == "Yes"
+        {/* Inputs */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Site & Zoning (with dims + setbacks under Site) */}
+          <div className="p-3 rounded-xl border">
+            <h3 className="font-medium text-sm flex items-center gap-2"><Ruler className="w-4 h-4" /> Site & Zoning</h3>
+            <div className="grid grid-cols-2 gap-3 mt-2 text-sm">
+              <label>
+                Site Area (m²)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.siteArea}
+                  onChange={(e) => onUpdate(scenario.id, { siteArea: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label>
+                FAR (1–10)
+                <input type="number" min={farMin} max={farMax} step={0.1} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.far}
+                  onChange={(e) => onUpdate(scenario.id, { far: clamp(Number(e.target.value), farMin, farMax) })}/>
+              </label>
 
-    st.divider()
-    st.subheader("Parking Efficiency")
-    e1, e2 = st.columns(2)
-    s["bayConv"] = e1.number_input("Conv Bay (m²) — net", min_value=1.0, value=float(DEFAULT["bayConv"]), step=0.5)
-    s["circConvPct"] = e2.number_input("Conv Circ (%)", min_value=0.0, max_value=100.0, value=float(DEFAULT["circConvPct"])*100, step=1.0) / 100.0
-    st.caption(f"eff Conv = {nf(s['bayConv']*(1+s['circConvPct']))} m²/คัน")
+              {/* Site dims + setbacks */}
+              <div className="col-span-2 grid grid-cols-6 gap-3">
+                <label className="col-span-2">
+                  Site Width (m)
+                  <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                    value={scenario.siteWidth}
+                    onChange={(e)=>onUpdate(scenario.id,{siteWidth: Math.max(0, Number(e.target.value))})}/>
+                </label>
+                <label className="col-span-2">
+                  Site Depth (m)
+                  <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                    value={scenario.siteDepth}
+                    onChange={(e)=>onUpdate(scenario.id,{siteDepth: Math.max(0, Number(e.target.value))})}/>
+                </label>
+                <label>
+                  Setback Front (m)
+                  <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                    value={scenario.setbackFront}
+                    onChange={(e)=>onUpdate(scenario.id,{setbackFront: Math.max(0, Number(e.target.value))})}/>
+                </label>
+                <label>
+                  Setback Rear (m)
+                  <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                    value={scenario.setbackRear}
+                    onChange={(e)=>onUpdate(scenario.id,{setbackRear: Math.max(0, Number(e.target.value))})}/>
+                </label>
+                <label>
+                  Setback Side (L) (m)
+                  <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                    value={scenario.setbackSideL}
+                    onChange={(e)=>onUpdate(scenario.id,{setbackSideL: Math.max(0, Number(e.target.value))})}/>
+                </label>
+                <label>
+                  Setback Side (R) (m)
+                  <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                    value={scenario.setbackSideR}
+                    onChange={(e)=>onUpdate(scenario.id,{setbackSideR: Math.max(0, Number(e.target.value))})}/>
+                </label>
+              </div>
 
-    s["bayAuto"] = e1.number_input("Auto Bay (m²) — net", min_value=1.0, value=float(DEFAULT["bayAuto"]), step=0.5, key="autobay")
-    s["circAutoPct"] = e2.number_input("Auto Circ (%)", min_value=0.0, max_value=100.0, value=float(DEFAULT["circAutoPct"])*100, step=1.0, key="autocirc") / 100.0
-    st.caption(f"eff Auto = {nf(s['bayAuto']*(1+s['circAutoPct']))} m²/คัน")
+              <label>
+                Building Type
+                <select className="mt-1 w-full border rounded-xl px-3 py-2" value={scenario.bType}
+                  onChange={(e)=>onUpdate(scenario.id,{
+                    bType: e.target.value,
+                    osr: suggestedOSR(e.target.value),
+                    greenPctOfOSR: suggestedGreenPct(e.target.value),
+                  })}>
+                  {BUILDING_TYPES.map((t)=> <option key={t} value={t}>{t}</option>)}
+                </select>
+              </label>
+              <label>
+                OSR (%)
+                <input type="number" min={0} max={100} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.osr}
+                  onChange={(e)=>onUpdate(scenario.id,{ osr: clamp(Number(e.target.value), 0, 100) })}/>
+                {RULES.building[scenario.bType]?.minOSR != null &&
+                  <div className="text-[11px] mt-1 text-neutral-500">ขั้นต่ำ {RULES.building[scenario.bType].minOSR}%</div>}
+              </label>
+              <label>
+                Green (% of OSR)
+                <input type="number" min={0} max={100} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.greenPctOfOSR}
+                  onChange={(e)=>onUpdate(scenario.id,{ greenPctOfOSR: clamp(Number(e.target.value), 0, 100) })}/>
+                {RULES.building[scenario.bType]?.greenPctOfOSR != null &&
+                  <div className="text-[11px] mt-1 text-neutral-500">ขั้นต่ำ {RULES.building[scenario.bType].greenPctOfOSR}%</div>}
+              </label>
+            </div>
+          </div>
 
-    st.caption("Open-lot (ไม่นับ FAR)")
-    o1, o2, o3 = st.columns(3)
-    s["openLotArea"] = o1.number_input("Open-lot Area (m²)", min_value=0.0, value=float(DEFAULT["openLotArea"]), step=10.0)
-    s["openLotBay"] = o2.number_input("Open-lot Bay (m²/คัน)", min_value=1.0, value=float(DEFAULT["openLotBay"]), step=0.5)
-    s["openLotCircPct"] = o3.number_input("Open-lot Circ (%)", min_value=0.0, max_value=100.0, value=float(DEFAULT["openLotCircPct"])*100, step=1.0) / 100.0
-    st.caption(f"eff Open-lot = {nf(s['openLotBay']*(1+s['openLotCircPct']))} m²/คัน")
+          {/* Geometry & Height */}
+          <div className="p-3 rounded-xl border">
+            <h3 className="font-medium text-sm flex items-center gap-2"><Building2 className="w-4 h-4" /> Geometry & Height</h3>
+            <div className="grid grid-cols-3 gap-3 mt-2 text-sm">
+              <label className="col-span-1">
+                Main Floors (AG)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.mainFloorsAG}
+                  onChange={(e)=>onUpdate(scenario.id,{ mainFloorsAG: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label className="col-span-1">
+                Main Floors (BG)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.mainFloorsBG}
+                  onChange={(e)=>onUpdate(scenario.id,{ mainFloorsBG: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label className="col-span-1">
+                F2F (m)
+                <input type="number" min={0} step={0.1} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.ftf}
+                  onChange={(e)=>onUpdate(scenario.id,{ ftf: Math.max(0, Number(e.target.value)) })}/>
+              </label>
 
-    st.divider()
-    st.subheader("Site Dimensions & Setbacks (diagram)")
-    d1, d2 = st.columns(2)
-    s["siteWidth"]  = d1.number_input("Site Width (m)", min_value=0.0, value=float(DEFAULT["siteWidth"]), step=1.0)
-    s["siteDepth"]  = d2.number_input("Site Depth (m)", min_value=0.0, value=float(DEFAULT["siteDepth"]), step=1.0)
-    sb1, sb2, sb3, sb4 = st.columns(4)
-    s["setbackFront"] = sb1.number_input("Front (m)", min_value=0.0, value=float(DEFAULT["setbackFront"]), step=0.5)
-    s["setbackRear"]  = sb2.number_input("Rear (m)",  min_value=0.0, value=float(DEFAULT["setbackRear"]),  step=0.5)
-    s["setbackSideL"] = sb3.number_input("Side-L (m)",min_value=0.0, value=float(DEFAULT["setbackSideL"]), step=0.5)
-    s["setbackSideR"] = sb4.number_input("Side-R (m)",min_value=0.0, value=float(DEFAULT["setbackSideR"]), step=0.5)
+              <label className="col-span-1">
+                Park Conv (AG)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.parkingConFloorsAG}
+                  onChange={(e)=>onUpdate(scenario.id,{ parkingConFloorsAG: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label className="col-span-1">
+                Park Conv (BG)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.parkingConFloorsBG}
+                  onChange={(e)=>onUpdate(scenario.id,{ parkingConFloorsBG: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label className="col-span-1">
+                Max Height (m)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.maxHeight}
+                  onChange={(e)=>onUpdate(scenario.id,{ maxHeight: Math.max(0, Number(e.target.value)) })}/>
+              </label>
 
-    st.divider()
-    st.subheader("Costs & Budget (THB)")
-    c1, c2 = st.columns(2)
-    s["costArchPerSqm"] = c1.number_input("Architecture (฿/m²)", min_value=0.0, value=float(DEFAULT["costArchPerSqm"]), step=100.0)
-    s["costStructPerSqm"] = c2.number_input("Structure (฿/m²)",  min_value=0.0, value=float(DEFAULT["costStructPerSqm"]), step=100.0)
-    s["costMEPPerSqm"]   = c1.number_input("MEP (฿/m²)",         min_value=0.0, value=float(DEFAULT["costMEPPerSqm"]),   step=100.0)
-    s["costGreenPerSqm"] = c2.number_input("Green (฿/m²)",       min_value=0.0, value=float(DEFAULT["costGreenPerSqm"]), step=100.0)
-    s["costConventionalPerCar"] = c1.number_input("Parking (Conv) (฿/car)", min_value=0.0, value=float(DEFAULT["costConventionalPerCar"]), step=1000.0)
-    s["costAutoPerCar"]         = c2.number_input("Parking (Auto) (฿/car)", min_value=0.0, value=float(DEFAULT["costAutoPerCar"]),         step=1000.0)
-    s["costOpenLotPerCar"]      = c1.number_input("Parking (Open-lot) (฿/car)", min_value=0.0, value=float(DEFAULT["costOpenLotPerCar"]),  step=1000.0)
-    s["budget"] = st.number_input("Budget (฿)", min_value=0.0, value=float(DEFAULT["budget"]), step=1_000_000.0)
+              <label className="col-span-1">
+                Auto Park (AG)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.parkingAutoFloorsAG}
+                  onChange={(e)=>onUpdate(scenario.id,{ parkingAutoFloorsAG: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label className="col-span-1">
+                Auto Park (BG)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.parkingAutoFloorsBG}
+                  onChange={(e)=>onUpdate(scenario.id,{ parkingAutoFloorsBG: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <div className="col-span-1" />
 
-# Editable custom cost table
-st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("Additional Cost Items")
-st.caption("กำหนดหมวดต้นทุนเพิ่มจากหมวดหลัก (per m², per car, หรือ lump sum)")
-default_rows = pd.DataFrame(s.get("customCosts") or [], columns=["name","kind","rate"])
-if default_rows.empty:
-    default_rows = pd.DataFrame([{"name":"FF&E","kind":"lump_sum","rate":0.0}])
-edited = st.data_editor(
-    default_rows,
-    column_config={
-        "name": st.column_config.TextColumn("Name", width="medium"),
-        "kind": st.column_config.SelectboxColumn("Kind", options=["per_sqm","per_car_conv","per_car_auto","lump_sum"]),
-        "rate": st.column_config.NumberColumn("Rate", step=100.0, format="%.2f"),
-    },
-    num_rows="dynamic",
-    use_container_width=True,
-    key="custom_costs_editor"
-)
-s["customCosts"] = edited.to_dict("records")
-st.markdown('</div>', unsafe_allow_html=True)
+              {/* Main plate mode */}
+              <div className="col-span-1">
+                <label>Main Plate</label>
+                <div className="grid grid-cols-2 gap-2 mt-1">
+                  <select className="border rounded-xl px-3 py-2"
+                    value={scenario.mainPlateMode}
+                    onChange={(e)=>onUpdate(scenario.id,{ mainPlateMode: e.target.value })}>
+                    <option value="abs">Abs (m²)</option>
+                    <option value="pct">% of buildable</option>
+                  </select>
+                  {scenario.mainPlateMode === "abs" ? (
+                    <input type="number" min={0} className="w-full border rounded-xl px-3 py-2"
+                      value={scenario.mainFloorPlate}
+                      onChange={(e)=>onUpdate(scenario.id,{ mainFloorPlate: Math.max(0, Number(e.target.value)) })}/>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <input type="number" min={0} max={100} className="w-full border rounded-xl px-3 py-2"
+                        value={scenario.mainPlatePct}
+                        onChange={(e)=>onUpdate(scenario.id,{ mainPlatePct: clamp(Number(e.target.value), 0, 100) })}/>
+                      <span className="text-sm text-neutral-500">% buildable</span>
+                    </div>
+                  )}
+                </div>
+                {scenario.mainPlateMode === "pct" && (
+                  <div className="text-[11px] text-neutral-500 mt-1">
+                    Using {scenario.mainPlatePct}% × Buildable ≈ <b>{nf(derived.mainPlateAbs)}</b> m²
+                  </div>
+                )}
+              </div>
 
-# Compute
-d = compute(s)
+              <label className="col-span-1">
+                Park Plate (Conv) (m²)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.parkingConPlate}
+                  onChange={(e)=>onUpdate(scenario.id,{ parkingConPlate: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label className="col-span-1">
+                Park Plate (Auto) (m²)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.parkingAutoPlate}
+                  onChange={(e)=>onUpdate(scenario.id,{ parkingAutoPlate: Math.max(0, Number(e.target.value)) })}/>
+              </label>
 
-# Summary metrics
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Max GFA (m²)", nf(d["maxGFA"]))
-m2.metric("FAR-counted (m²)", nf(d["farCounted"]))
-m3.metric("Estimated Height (m)", nf(d["estHeight"]), delta="OK" if d["heightOk"] else "Exceeds")
-m4.metric("CAPEX (฿)", nf(d["capexTotal"]), delta="OK" if d["budgetOk"] else "Over Budget")
+              <label className="col-span-1">
+                Count Parking in FAR?
+                <select className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={String(scenario.countParkingInFAR)}
+                  onChange={(e)=>onUpdate(scenario.id,{ countParkingInFAR: e.target.value === "true" })}>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+              <label className="col-span-1">
+                Count Basement in FAR?
+                <select className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={String(scenario.countBasementInFAR)}
+                  onChange={(e)=>onUpdate(scenario.id,{ countBasementInFAR: e.target.value === "true" })}>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+              <div className="col-span-1" />
+            </div>
+          </div>
 
-# Zoning / Areas / Parking
-z1, z2, z3 = st.columns(3)
-with z1:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Zoning")
-    st.write(f"**Open Space**: {nf(d['openSpaceArea'])} m² ({s['osr']}%)")
-    st.write(f"**Green**: {nf(d['greenArea'])} m² ({s['greenPctOfOSR']}% of OSR)")
-    st.write(f"**FAR check**: {'✅ OK' if d['farOk'] else '❌ Exceeds Max GFA'}")
-    st.markdown('</div>', unsafe_allow_html=True)
+          {/* Parking & Efficiency */}
+          <div className="p-3 rounded-xl border">
+            <h3 className="font-medium text-sm flex items-center gap-2"><Car className="w-4 h-4" /> Parking & Efficiency</h3>
+            <div className="grid grid-cols-3 gap-3 mt-2 text-sm">
+              <label>
+                Conv Bay (m²) — net
+                <input type="number" min={1} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.bayConv}
+                  onChange={(e)=>onUpdate(scenario.id,{ bayConv: Math.max(1, Number(e.target.value)) })}/>
+              </label>
+              <label>
+                Conv Circ (%)
+                <input type="number" min={0} max={100} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.circConvPct * 100}
+                  onChange={(e)=>onUpdate(scenario.id,{ circConvPct: clamp(Number(e.target.value), 0, 100) / 100 })}/>
+              </label>
+              <div className="text-xs text-neutral-600 flex items-end">eff = {nf(scenario.bayConv*(1+scenario.circConvPct))} m²/คัน</div>
 
-with z2:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Areas")
-    st.write(f"Main CFA (AG): **{nf(d['mainCFA_AG'])}** m²")
-    st.write(f"Main CFA (BG): **{nf(d['mainCFA_BG'])}** m²")
-    st.write(f"Parking CFA (Conv): **{nf(d['parkConCFA'])}** m²")
-    st.write(f"Parking CFA (Auto): **{nf(d['parkAutoCFA'])}** m²")
-    st.write(f"Total CFA: **{nf(d['totalCFA'])}** m²")
-    st.markdown('</div>', unsafe_allow_html=True)
+              <label>
+                Auto Bay (m²) — net
+                <input type="number" min={1} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.bayAuto}
+                  onChange={(e)=>onUpdate(scenario.id,{ bayAuto: Math.max(1, Number(e.target.value)) })}/>
+              </label>
+              <label>
+                Auto Circ (%)
+                <input type="number" min={0} max={100} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.circAutoPct * 100}
+                  onChange={(e)=>onUpdate(scenario.id,{ circAutoPct: clamp(Number(e.target.value), 0, 100) / 100 })}/>
+              </label>
+              <div className="text-xs text-neutral-600 flex items-end">eff = {nf(scenario.bayAuto*(1+scenario.circAutoPct))} m²/คัน</div>
 
-with z3:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Parking")
-    st.write(f"Cars/Floor (Conv): **{d['convCarsPerFloor']}** (eff {nf(s['bayConv']*(1+s['circConvPct']))} m²/car)")
-    st.write(f"Cars/Floor (Auto): **{d['autoCarsPerFloor']}** (eff {nf(s['bayAuto']*(1+s['circAutoPct']))} m²/car)")
-    st.write(f"Open-lot Cars: **{d['openLotCars']}** (eff {nf(s['openLotBay']*(1+s['openLotCircPct']))} m²/car)")
-    st.write(f"Total Cars: **{d['totalCars']}**  · Disabled: **{d['disabledCars']}**")
-    st.markdown('</div>', unsafe_allow_html=True)
+              <label className="col-span-1">
+                Open-lot Area (m²)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.openLotArea}
+                  onChange={(e)=>onUpdate(scenario.id,{ openLotArea: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label className="col-span-1">
+                Open-lot Bay (m²/คัน)
+                <input type="number" min={1} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.openLotBay}
+                  onChange={(e)=>onUpdate(scenario.id,{ openLotBay: Math.max(1, Number(e.target.value)) })}/>
+              </label>
+              <label className="col-span-1">
+                Open-lot Circ (%)
+                <input type="number" min={0} max={100} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.openLotCircPct * 100}
+                  onChange={(e)=>onUpdate(scenario.id,{ openLotCircPct: clamp(Number(e.target.value), 0, 100) / 100 })}/>
+              </label>
+              <div className="col-span-3 text-xs text-neutral-600">eff (open-lot) = {nf(derived.effAreaOpenCar)} m²/คัน</div>
+            </div>
+          </div>
 
-# Efficiency ratios (ใหม่)
-st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("Efficiency Ratios")
-r1, r2, r3, r4 = st.columns(4)
-r1.metric("NLA / CFA", f"{d['ratio_nla_cfa']*100:.1f}%")
-r2.metric("NSA / GFA", f"{d['ratio_nsa_gfa']*100:.1f}%")
-r3.metric("NSA / CFA", f"{d['ratio_nsa_cfa']*100:.1f}%")
-r4.metric("NLA / GFA", f"{d['ratio_nla_gfa']*100:.1f}%")
-st.markdown('</div>', unsafe_allow_html=True)
+          {/* Costs & Budget (with Additional cost inside) */}
+          <div className="p-3 rounded-xl border">
+            <h3 className="font-medium text-sm flex items-center gap-2"><Factory className="w-4 h-4" /> Costs & Budget</h3>
+            <div className="grid grid-cols-2 gap-3 mt-2 text-sm">
+              <label>Architecture {sqmLabel}
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.costArchPerSqm}
+                  onChange={(e)=>onUpdate(scenario.id,{ costArchPerSqm: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label>Structure {sqmLabel}
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.costStructPerSqm}
+                  onChange={(e)=>onUpdate(scenario.id,{ costStructPerSqm: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label>MEP {sqmLabel}
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.costMEPPerSqm}
+                  onChange={(e)=>onUpdate(scenario.id,{ costMEPPerSqm: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label>Green {sqmLabel}
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.costGreenPerSqm}
+                  onChange={(e)=>onUpdate(scenario.id,{ costGreenPerSqm: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label>Parking (Conv) ({curSymbol}/car)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.costConventionalPerCar}
+                  onChange={(e)=>onUpdate(scenario.id,{ costConventionalPerCar: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label>Parking (Auto) ({curSymbol}/car)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.costAutoPerCar}
+                  onChange={(e)=>onUpdate(scenario.id,{ costAutoPerCar: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label>Parking (Open-lot) ({curSymbol}/car)
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.costOpenLotPerCar}
+                  onChange={(e)=>onUpdate(scenario.id,{ costOpenLotPerCar: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+              <label className="col-span-2">Budget ({curSymbol})
+                <input type="number" min={0} className="mt-1 w-full border rounded-xl px-3 py-2"
+                  value={scenario.budget}
+                  onChange={(e)=>onUpdate(scenario.id,{ budget: Math.max(0, Number(e.target.value)) })}/>
+              </label>
+            </div>
 
-# CAPEX Breakdown (ตามชื่อ=สีคงที่)
-CAPEX_COLOR_MAP = {
-    "Construction": "#111827",  # ดำเข้ม
-    "Green":        "#6b7280",  # เทากลาง
-    "Parking":      "#9ca3af",  # เทาอ่อน
-    "Custom":       "#d1d5db",  # เทาอ่อนมาก
+            {/* Additional Cost Items */}
+            <div className="mt-3">
+              <div className="flex items-center justify-between">
+                <h4 className="font-medium text-sm">Additional Cost Items</h4>
+                <button
+                  onClick={() => onUpdate(scenario.id, {
+                    customCosts: [...(scenario.customCosts || []), { id: Date.now(), name: "FF&E", kind: "lump_sum", rate: 0 }]
+                  })}
+                  className="text-sm px-2 py-1 border rounded-xl flex items-center gap-1 hover:bg-neutral-100">
+                  <Plus className="w-4 h-4" />Add
+                </button>
+              </div>
+              {(scenario.customCosts || []).length === 0 &&
+                <div className="text-xs text-neutral-500 mt-1">(ว่าง) — เพิ่มหมวด FF&E/Facade Premium/Consultant/Permit ฯลฯ</div>}
+              {(scenario.customCosts || []).map((i) => (
+                <div key={i.id} className="grid grid-cols-12 gap-2 items-center mt-2">
+                  <input className="col-span-5 border rounded-xl px-3 py-2 text-sm" value={i.name}
+                    onChange={(e)=>onUpdate(scenario.id,{
+                      customCosts: (scenario.customCosts || []).map((x)=>x.id===i.id?{...x, name:e.target.value}:x)
+                    })}/>
+                  <select className="col-span-3 border rounded-xl px-3 py-2 text-sm" value={i.kind}
+                    onChange={(e)=>onUpdate(scenario.id,{
+                      customCosts: (scenario.customCosts || []).map((x)=>x.id===i.id?{...x, kind:e.target.value}:x)
+                    })}>
+                    <option value="per_sqm">per m²</option>
+                    <option value="per_car_conv">per car (Conv)</option>
+                    <option value="per_car_auto">per car (Auto)</option>
+                    <option value="lump_sum">lump sum</option>
+                  </select>
+                  <input type="number" className="col-span-3 border rounded-xl px-3 py-2 text-sm" value={i.rate}
+                    onChange={(e)=>onUpdate(scenario.id,{
+                      customCosts: (scenario.customCosts || []).map((x)=>x.id===i.id?{...x, rate:Number(e.target.value)}:x)
+                    })}/>
+                  <button onClick={()=>onUpdate(scenario.id,{ customCosts: (scenario.customCosts || []).filter((x)=>x.id!==i.id) })}
+                    className="col-span-1 justify-self-end text-neutral-500 hover:text-red-600">
+                    <Trash2 className="w-5 h-5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Summary & Viz (neutral theme) */}
+        <div className="grid md:grid-cols-3 gap-4">
+          <div className="p-4 rounded-2xl bg-white border border-neutral-200 shadow-sm">
+            <h3 className="text-sm font-semibold flex items-center gap-2 text-neutral-800">
+              <TrendingUp className="w-4 h-4" /> Zoning Summary
+            </h3>
+            <div className="mt-2 text-sm space-y-1">
+              <div>Max GFA: <b>{nf(derived.maxGFA)}</b> m²</div>
+              <div>FAR-counted Area: <b>{nf(derived.farCounted)}</b> m²</div>
+              <div>Open Space (OSR): <b>{nf(derived.openSpaceArea)}</b> m² ({scenario.osr}%)</div>
+              <div>Green Area: <b>{nf(derived.greenArea)}</b> m² ({scenario.greenPctOfOSR}% of OSR)</div>
+              <div className={`text-xs ${derived.farOk ? "text-emerald-700" : "text-red-600"} flex items-center gap-1`}>
+                {!derived.farOk && <TriangleAlert className="w-3 h-3" />} FAR check: {derived.farOk ? "OK" : "Exceeds Max GFA"}
+              </div>
+            </div>
+          </div>
+          <div className="p-4 rounded-2xl bg-white border border-neutral-200 shadow-sm">
+            <h3 className="text-sm font-semibold flex items-center gap-2 text-neutral-800">
+              <Calculator className="w-4 h-4" /> Areas
+            </h3>
+            <div className="mt-2 text-sm space-y-1">
+              <div>Main CFA (AG): <b>{nf(derived.mainCFA_AG)}</b> m²</div>
+              <div>Main CFA (BG): <b>{nf(derived.mainCFA_BG)}</b> m²</div>
+              <div>Parking CFA (Conv): <b>{nf(derived.parkConCFA)}</b> m²</div>
+              <div>Parking CFA (Auto): <b>{nf(derived.parkAutoCFA)}</b> m²</div>
+              <div>Total CFA: <b>{nf(derived.totalCFA)}</b> m²</div>
+            </div>
+          </div>
+          <div className="p-4 rounded-2xl bg-white border border-neutral-200 shadow-sm">
+            <h3 className="text-sm font-semibold flex items-center gap-2 text-neutral-800">
+              <Building2 className="w-4 h-4" /> Height
+            </h3>
+            <div className="mt-2 text-sm space-y-1">
+              <div>Estimated Height (AG only): <b>{nf(derived.estHeight)}</b> m</div>
+              <div>Max Height: <b>{nf(scenario.maxHeight)}</b> m</div>
+              <div className={`text-xs ${derived.heightOk ? "text-emerald-700" : "text-red-600"} flex items-center gap-1`}>
+                {!derived.heightOk && <TriangleAlert className="w-3 h-3" />} Height check: {derived.heightOk ? "OK" : "Exceeds Limit"}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-4">
+          <div className="p-4 rounded-2xl bg-white border border-neutral-200 shadow-sm">
+            <h3 className="text-sm font-semibold flex items-center gap-2 text-neutral-800">
+              <Calculator className="w-4 h-4" /> Efficiency Output
+            </h3>
+            <div className="mt-2 text-sm space-y-1">
+              <div>NLA: <b>{nf(derived.nla)}</b> m² <span className="text-xs text-neutral-500">({nf(derived.nla/derived.totalCFA,3)} × CFA)</span></div>
+              <div>NSA: <b>{nf(derived.nsa)}</b> m² <span className="text-xs text-neutral-500">({nf(derived.nsa/derived.totalCFA,3)} × CFA)</span></div>
+              <div>GFA: <b>{nf(derived.gfa)}</b> m² <span className="text-xs text-neutral-500">({nf(derived.gfa/derived.totalCFA,3)} × CFA)</span></div>
+              <div className="border-t pt-2 text-neutral-700 space-y-0.5">
+                <div>NLA / CFA: <b>{nf(derived.ratioNLA_CFA*100,1)}%</b></div>
+                <div>NSA / GFA: <b>{nf(derived.ratioNSA_GFA*100,1)}%</b></div>
+                <div>NSA / CFA: <b>{nf(derived.ratioNSA_CFA*100,1)}%</b></div>
+                <div>NLA / GFA: <b>{nf(derived.ratioNLA_GFA*100,1)}%</b></div>
+              </div>
+            </div>
+          </div>
+          <div className="p-4 rounded-2xl bg-white border border-neutral-200 shadow-sm">
+            <h3 className="text-sm font-semibold flex items-center gap-2 text-neutral-800">
+              <Car className="w-4 h-4" /> Parking
+            </h3>
+            <div className="mt-2 text-sm space-y-1">
+              <div>Cars/Floor (Conv): <b>{derived.convCarsPerFloor}</b> <span className="text-xs text-neutral-500">(eff {nf(effAreaConCar)} m²/car)</span></div>
+              <div>Cars/Floor (Auto): <b>{derived.autoCarsPerFloor}</b> <span className="text-xs text-neutral-500">(eff {nf(effAreaAutoCar)} m²/car)</span></div>
+              <div>Open-lot Cars: <b>{derived.openLotCars}</b> <span className="text-xs text-neutral-500">(eff {nf(derived.effAreaOpenCar)} m²/car)</span></div>
+              <div>Total Cars (Conv): <b>{derived.totalConvCars}</b></div>
+              <div>Total Cars (Auto): <b>{derived.totalAutoCars}</b></div>
+              <div>Total Cars: <b>{derived.totalCars}</b></div>
+              <div>Disabled Spaces (calc): <b>{derived.disabledCars}</b></div>
+            </div>
+          </div>
+          <div className="p-4 rounded-2xl bg-white border border-neutral-200 shadow-sm">
+            <h3 className="text-sm font-semibold flex items-center gap-2 text-neutral-800">
+              <Factory className="w-4 h-4" /> CAPEX
+            </h3>
+            <div className="mt-2 text-sm space-y-1">
+              <div>Base Build Cost: <b>{curSymbol}{nf(derived.constructionCost)}</b></div>
+              <div>Green Cost: <b>{curSymbol}{nf(derived.greenCost)}</b></div>
+              <div>Parking Cost: <b>{curSymbol}{nf(derived.parkingCost)}</b> <span className="text-xs text-neutral-500">(includes open-lot)</span></div>
+              {(scenario.customCosts || []).length > 0 && <div>Additional (custom): <b>{curSymbol}{nf(derived.customCostTotal)}</b></div>}
+              <div className="border-t pt-2">Total CAPEX: <b>{curSymbol}{nf(derived.capexTotal)}</b></div>
+              <div className={`text-xs ${derived.budgetOk ? "text-emerald-700" : "text-red-600"} flex items-center gap-1`}>
+                {!derived.budgetOk && <TriangleAlert className="w-3 h-3" />} Budget check: {derived.budgetOk ? "OK" : "Over Budget"} (Budget {curSymbol}{nf(scenario.budget)})
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Viz row */}
+        <div className="grid md:grid-cols-3 gap-4">
+          <div className="p-3 rounded-2xl bg-white border shadow flex flex-col">
+            <div className="text-sm font-semibold flex items-center gap-2 mb-2"><LayoutGrid className="w-4 h-4" /> Site Visualization</div>
+            <SiteViz
+              siteArea={scenario.siteArea}
+              osr={scenario.osr}
+              greenArea={derived.greenArea}
+              siteWidth={scenario.siteWidth}
+              siteDepth={scenario.siteDepth}
+              setbacks={{ front: scenario.setbackFront, rear: scenario.setbackRear, sideL: scenario.setbackSideL, sideR: scenario.setbackSideR }}
+              className="w-full h-auto"
+            />
+            <div className="text-xs text-neutral-600 mt-2">Site / Buildable / Open Space / Green (schematic)</div>
+          </div>
+          <div className="p-3 rounded-2xl bg-white border shadow col-span-2">
+            <div className="text-sm font-semibold flex items-center gap-2 mb-2"><BarChart3 className="w-4 h-4" /> CAPEX Breakdown</div>
+            <div style={{ width: "100%", height: 240 }}>
+              <ResponsiveContainer>
+                <PieChart>
+                  <Pie data={capexData} dataKey="value" nameKey="name" innerRadius={50} outerRadius={80}>
+                    {capexData.map((entry, idx) => (
+                      <Cell key={`cell-${idx}`} fill={CAPEX_COLOR_BY_NAME[entry.name] || "#9ca3af"} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(v) => nf(v)} />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+
+        {/* Legal & Warning banner */}
+        {warnings.length > 0 && (
+          <div className="p-4 rounded-2xl bg-amber-50 border-amber-200 border text-amber-900 flex gap-3 items-start">
+            <TriangleAlert className="w-4 h-4 mt-0.5" />
+            <div className="text-sm"><b>Design check:</b> {warnings.join(" · ")}</div>
+          </div>
+        )}
+
+        {/* Export/Import */}
+        <div className="flex gap-2">
+          <button onClick={handleExportCSV} className="px-3 py-2 rounded-xl border shadow-sm hover:bg-neutral-100 flex items-center gap-2">
+            <Download className="w-4 h-4" /> Export CSV
+          </button>
+          <label className="px-3 py-2 rounded-xl border shadow-sm hover:bg-neutral-100 flex items-center gap-2 cursor-pointer">
+            <FileUp className="w-4 h-4" /> Import CSV
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                handleImportCSV(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
+        </div>
+
+        {/* Tests */}
+        <TestsPanel scenario={scenario} derived={derived} />
+      </div>
+    </div>
+  );
 }
-pie_df = pd.DataFrame([
-    {"name": "Construction", "value": max(0, d["constructionCost"])},
-    {"name": "Green",        "value": max(0, d["greenCost"])},
-    {"name": "Parking",      "value": max(0, d["parkingCost"])},
-    {"name": "Custom",       "value": max(0, d["customCostTotal"])},
-])
-st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("CAPEX Breakdown")
-fig = px.pie(pie_df, values="value", names="name", hole=0.45, color="name", color_discrete_map=CAPEX_COLOR_MAP)
-fig.update_layout(template="plotly_white")
-st.plotly_chart(fig, use_container_width=True)
-st.markdown('</div>', unsafe_allow_html=True)
 
-# Site setbacks diagram (ใช้ตัวเลข siteArea เป็นหลักสำหรับข้อความ; สเกลจาก width/depth ที่ใส่)
-st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("Site & Setbacks Diagram")
-if d["siteWidth"] > 0 and d["siteDepth"] > 0:
-    fig2 = go.Figure()
-    # Outer site rectangle
-    fig2.add_shape(type="rect", x0=0, y0=0, x1=d["siteWidth"], y1=d["siteDepth"],
-                   line=dict(color="#111827"), fillcolor="#ffffff")
-    # Buildable rectangle
-    bx0 = d["sitetWidth"]=0 + s["setbackSideL"]
-    bx1 = d["siteWidth"] - s["setbackSideR"]
-    by0 = 0 + s["setbackFront"]
-    by1 = d["siteDepth"] - s["setbackRear"]
-    bx0 = max(0,bx0); by0=max(0,by0); bx1=max(bx0,bx1); by1=max(by0,by1)
-    fig2.add_shape(type="rect", x0=bx0, y0=by0, x1=bx1, y1=by1,
-                   line=dict(color="#6b7280"), fillcolor="#e5e7eb")
-    fig2.add_annotation(x=d["siteWidth"]/2, y=d["siteDepth"]+0.5, showarrow=False,
-                        text=f"Site: {nf(s['siteArea'])} m² (diagram: {nf(d['siteWidth'])} × {nf(d['siteDepth'])} m)")
-    fig2.add_annotation(x=(bx0+bx1)/2, y=(by0+by1)/2, showarrow=False,
-                        text=f"Buildable ~ {nf(d['buildableArea'])} m²")
-    fig2.update_xaxes(range=[-1, d["siteWidth"]+1], visible=False)
-    fig2.update_yaxes(range=[-1, d["siteDepth"]+1], scaleanchor="x", scaleratio=1, visible=False)
-    fig2.update_layout(height=320, margin=dict(l=10,r=10,t=10,b=10), template="plotly_white")
-    st.plotly_chart(fig2, use_container_width=True)
+// Small SVG site visualizer (with true dims & buildable, plus schematic OSR/Green)
+function SiteViz({ siteArea, osr, greenArea, className, siteWidth, siteDepth, setbacks }) {
+  const W = 460, H = 300, P = 16;
+  const cx = W / 2, cy = H / 2;
+  const hasDims = Number(siteWidth) > 0 && Number(siteDepth) > 0;
 
-    if d["scaleInfo"] is not None:
-        st.caption("⚠️ Width×Depth ที่กรอกไม่เท่ากับ siteArea จริง—ใช้เพื่อสเกลภาพเท่านั้น (ยึด siteArea เป็นหลักในการคำนวณ)")
-else:
-    st.info("กรอก Site Width/Depth เพื่อดูแผนภาพ setbacks")
+  let elements = null;
+  if (hasDims) {
+    const scale = Math.min((W - 2 * P) / siteWidth, (H - 2 * P) / siteDepth);
+    const sw = siteWidth * scale, sd = siteDepth * scale;
+    const x0 = cx - sw / 2, y0 = cy - sd / 2;
 
-st.markdown('</div>', unsafe_allow_html=True)
+    const sb = {
+      front: Math.max(0, setbacks?.front || 0) * scale,
+      rear: Math.max(0, setbacks?.rear || 0) * scale,
+      l: Math.max(0, setbacks?.sideL || 0) * scale,
+      r: Math.max(0, setbacks?.sideR || 0) * scale,
+    };
+    const bx0 = x0 + sb.l, bx1 = x0 + sw - sb.r;
+    const by0 = y0 + sb.front, by1 = y0 + sd - sb.rear;
 
-# Export / Import Scenario + Template
-st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("Export / Import Scenario")
-export_rows = [{"Field": k, "Value": v} for k, v in s.items()]
-csv_str = create_csv(export_rows)
+    // OSR & Green schematic rects centered
+    const osrRatio = clamp(osr / 100, 0, 1);
+    const greenRatio = clamp(greenArea / Math.max(1e-9, siteArea * osrRatio), 0, 1);
+    const osrW = sw * Math.sqrt(osrRatio), osrH = sd * Math.sqrt(osrRatio);
+    const greenW = osrW * Math.sqrt(greenRatio), greenH = osrH * Math.sqrt(greenRatio);
 
-cA, cB, cC = st.columns([1,1,2])
-with cA:
-    st.download_button("⬇️ Export CSV", data=csv_str, file_name="scenario.csv", mime="text/csv")
-with cB:
-    # Template = โครง Field,Value (ค่าว่าง/ตัวอย่าง)
-    template_rows = [{"Field": k, "Value": DEFAULT[k]} for k in DEFAULT.keys()]
-    template_csv = create_csv(template_rows)
-    st.download_button("⬇️ Download CSV Template", data=template_csv, file_name="scenario_template.csv", mime="text/csv")
-with cC:
-    st.write("รูปแบบไฟล์: สองคอลัมน์ **Field,Value**. ตัวอย่างแถว:")
-    st.code("Field,Value\nsiteArea,8000\nfar,5\nbType,Housing\n...", language="csv")
+    elements = (
+      <>
+        {/* Site */}
+        <rect x={x0} y={y0} width={sw} height={sd} fill="#fff" stroke="#D1D5DB" strokeWidth={2} />
+        {/* Buildable */}
+        <rect x={bx0} y={by0} width={Math.max(0, bx1 - bx0)} height={Math.max(0, by1 - by0)} fill="#F3F4F6" stroke="#9CA3AF" />
+        {/* OSR & Green schematic */}
+        <rect x={cx - osrW / 2} y={cy - osrH / 2} width={osrW} height={osrH} fill="#E5FBEA" stroke="#86EFAC" />
+        <rect x={cx - greenW / 2} y={cy - greenH / 2} width={greenW} height={greenH} fill="#86EFAC" stroke="#059669" />
+        <g fontSize={10} fill="#374151">
+          <text x={x0 + 6} y={y0 + 14}>Site</text>
+          <text x={bx0 + 6} y={by0 + 14}>Buildable</text>
+          <text x={cx - osrW / 2 + 6} y={cy - osrH / 2 + 14}>Open Space</text>
+          <text x={cx - greenW / 2 + 6} y={cy - greenH / 2 + 14}>Green</text>
+        </g>
+      </>
+    );
+  } else {
+    // Fallback proportional
+    const siteW = W - 2 * P, siteH = H - 2 * P;
+    const osrRatio = clamp(osr / 100, 0, 1);
+    const greenRatio = clamp(greenArea / Math.max(1e-9, siteArea * osrRatio), 0, 1);
+    const osrW = siteW * Math.sqrt(osrRatio), osrH = siteH * Math.sqrt(osrRatio);
+    const greenW = osrW * Math.sqrt(greenRatio), greenH = osrH * Math.sqrt(greenRatio);
+    elements = (
+      <>
+        <rect x={P} y={P} width={siteW} height={siteH} fill="#fff" stroke="#CBD5E1" strokeWidth={2} />
+        <rect x={cx - osrW / 2} y={cy - osrH / 2} width={osrW} height={osrH} fill="#E5FBEA" stroke="#86EFAC" />
+        <rect x={cx - greenW / 2} y={cy - greenH / 2} width={greenW} height={greenH} fill="#86EFAC" stroke="#059669" />
+        <g fontSize={10} fill="#334155">
+          <text x={P + 6} y={P + 14}>Site</text>
+          <text x={cx - osrW / 2 + 6} y={cy - osrH / 2 + 14}>Open Space</text>
+          <text x={cx - greenW / 2 + 6} y={cy - greenH / 2 + 14}>Green</text>
+        </g>
+      </>
+    );
+  }
 
-up = st.file_uploader("⬆️ Import CSV (Field,Value)", type=["csv"])
-if up:
-    df = pd.read_csv(up)
-    try:
-        imported = {}
-        for _, row in df.iterrows():
-            k = str(row["Field"])
-            v = row["Value"]
-            try:
-                if str(v).strip() == "":
-                    imported[k] = ""
-                else:
-                    imported[k] = float(v) if "." in str(v) or "e" in str(v).lower() else int(v)
-            except:
-                imported[k] = v
-        st.success("นำเข้าค่าจาก CSV สำเร็จ (preview)")
-        st.json({k: imported.get(k, s[k]) for k in s.keys()})
-        st.caption("Tip: นำค่าที่ import ไปตั้งเป็น DEFAULT ได้โดยแก้ dict `DEFAULT` ในโค้ด")
-    except Exception as e:
-        st.error(f"Import failed: {e}")
-st.markdown('</div>', unsafe_allow_html=True)
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className={className}>
+      <rect x={0} y={0} width={W} height={H} rx={12} fill="#F8FAFC" />
+      {elements}
+    </svg>
+  );
+}
 
-# Self-check Tests (เหมือนเดิม + open-lot)
-st.markdown('<div class="card">', unsafe_allow_html=True)
-st.subheader("Self-check Tests")
-def trow(name, actual, expected):
-    ok = (actual == expected)
-    st.write(("✅" if ok else "❌") + f" **{name}** — actual: `{actual}`  expected: `{expected}`")
+// =============================
+// Test panel (ALWAYS add tests)
+// =============================
+function TestsPanel({ scenario, derived }) {
+  const tests = useMemo(() => {
+    // recompute expected with same rules
+    const width  = Math.max(0, Number(scenario.siteWidth || 0));
+    const depth  = Math.max(0, Number(scenario.siteDepth || 0));
+    const sbF = Math.max(0, Number(scenario.setbackFront || 0));
+    const sbR = Math.max(0, Number(scenario.setbackRear || 0));
+    const sbL = Math.max(0, Number(scenario.setbackSideL || 0));
+    const sbRR= Math.max(0, Number(scenario.setbackSideR || 0));
+    const buildableArea = Math.max(0, width - (sbL + sbRR)) * Math.max(0, depth - (sbF + sbR));
 
-trow("calcDisabledParking(0)",   calc_disabled_parking(0),   0)
-trow("calcDisabledParking(50)",  calc_disabled_parking(50),  2)
-trow("calcDisabledParking(51)",  calc_disabled_parking(51),  3)
-trow("calcDisabledParking(100)", calc_disabled_parking(100), 3)
-trow("calcDisabledParking(101)", calc_disabled_parking(101), 4)
-trow("calcDisabledParking(250)", calc_disabled_parking(250), 5)
+    const mainPlateAbs =
+      scenario.mainPlateMode === "pct"
+        ? Math.max(0, Math.min(buildableArea, (Number(scenario.mainPlatePct || 0)/100) * buildableArea))
+        : Math.max(0, Number(scenario.mainFloorPlate || 0));
 
-mAG = s["mainFloorsAG"] * s["mainFloorPlate"]
-mBG = s["mainFloorsBG"] * s["mainFloorPlate"]
-pcAG = s["parkingConFloorsAG"] * s["parkingConPlate"]
-pcBG = s["parkingConFloorsBG"] * s["parkingConPlate"]
-paAG = s["parkingAutoFloorsAG"] * s["parkingAutoPlate"]
-paBG = s["parkingAutoFloorsBG"] * s["parkingAutoPlate"]
-far_expected = compute_far_counted(mAG, mBG, pcAG, pcBG, paAG, paBG, s["countParkingInFAR"], s["countBasementInFAR"])
-trow("computeFarCounted(default flags)", compute_far_counted(mAG, mBG, pcAG, pcBG, paAG, paBG, s["countParkingInFAR"], s["countBasementInFAR"]), far_expected)
-trow("openLotCars formula", d["openLotCars"], math.floor(s["openLotArea"]/max(1, s["openLotBay"]*(1+s["openLotCircPct"]))))
-st.markdown('</div>', unsafe_allow_html=True)
+    const mAG = scenario.mainFloorsAG * mainPlateAbs;
+    const mBG = scenario.mainFloorsBG * mainPlateAbs;
+    const pcAG = scenario.parkingConFloorsAG * scenario.parkingConPlate;
+    const pcBG = scenario.parkingConFloorsBG * scenario.parkingConPlate;
+    const paAG = scenario.parkingAutoFloorsAG * scenario.parkingAutoPlate;
+    const paBG = scenario.parkingAutoFloorsBG * scenario.parkingAutoPlate;
+
+    const farExpected = computeFarCounted(
+      mAG, mBG, pcAG, pcBG, paAG, paBG,
+      scenario.countParkingInFAR, scenario.countBasementInFAR
+    );
+
+    const openLotExpectedCars = Math.floor(
+      scenario.openLotArea / Math.max(1, scenario.openLotBay * (1 + scenario.openLotCircPct))
+    );
+
+    return [
+      // disabled parking rule
+      { name: "calcDisabledParking(0)",   actual: calcDisabledParking(0),   expected: 0 },
+      { name: "calcDisabledParking(50)",  actual: calcDisabledParking(50),  expected: 2 },
+      { name: "calcDisabledParking(51)",  actual: calcDisabledParking(51),  expected: 3 },
+      { name: "calcDisabledParking(100)", actual: calcDisabledParking(100), expected: 3 },
+      { name: "calcDisabledParking(101)", actual: calcDisabledParking(101), expected: 4 },
+      { name: "calcDisabledParking(250)", actual: calcDisabledParking(250), expected: 5 },
+
+      // FAR counted
+      { name: "computeFarCounted(default flags)", actual: derived.farCounted, expected: farExpected },
+      { name: "computeFarCounted(no parking, no basement)", actual: computeFarCounted(100,20,30,40,50,60,false,false), expected: 100 },
+      { name: "computeFarCounted(parking+basement)",        actual: computeFarCounted(100,20,30,40,50,60,true,true),   expected: 300 },
+
+      // open-lot behavior
+      { name: "openLot cars calc", actual: derived.openLotCars, expected: openLotExpectedCars },
+
+      // main plate % clamp
+      { name: "mainPlate pct clamp ≤ buildable", actual: scenario.mainPlateMode==="pct" ? (derived.mainPlateAbs <= buildableArea) : true, expected: true },
+    ];
+  }, [scenario, derived]);
+
+  return (
+    <div className="mt-4 p-3 rounded-xl border text-sm">
+      <div className="font-semibold mb-2">Tests</div>
+      <ul className="space-y-1">
+        {tests.map((t, i) => (
+          <li key={i} className={t.actual === t.expected ? "text-emerald-700" : "text-red-600"}>
+            {t.actual === t.expected ? "✅" : "❌"} {t.name} — actual: <b>{String(t.actual)}</b>, expected: <b>{String(t.expected)}</b>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// Optional default export
+export { ScenarioCard, SiteViz, computeFarCounted, calcDisabledParking };
+export default ScenarioCard;
