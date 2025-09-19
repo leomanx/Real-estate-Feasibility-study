@@ -1,4 +1,2 @@
-streamlit
-pandas
-numpy
-altair
+streamlit>=1.30
+pandas>=2.0
