@@ -1,7 +1,7 @@
 [theme]
-base = "Dark"
-primaryColor = "#ffffff"              # เกือบดำ
+base = "Light"
+primaryColor = "#0f172a"              # เกือบดำ
 backgroundColor = "#f5f5f5"           # เทาอ่อน
 secondaryBackgroundColor = "#111827"  # การ์ดสีขาวสะอาด
-textColor = "#0f172a"                 # กรมท่าเข้ม
+textColor = "#ffffff"                 # กรมท่าเข้ม
 font = "sans serif"
