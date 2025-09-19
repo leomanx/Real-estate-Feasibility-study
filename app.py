@@ -40,6 +40,29 @@ def compute_far_counted(mainAG, mainBG, pcAG, pcBG, paAG, paBG, countParking, co
         far += pcAG + (pcBG if countBasement else 0.0)
         far += paAG + (paBG if countBasement else 0.0)
     return far
+    
+def ensure_defaults(s):
+    out = dict(s)
+    for k, v in DEFAULT.items():
+        if k not in out:
+            out[k] = float(v) if isinstance(v, (int, float)) else v
+    return out
+
+# 2) after creating/loading scenario
+st.session_state.scenario = ensure_defaults(st.session_state.scenario)
+s = st.session_state.scenario
+
+# 3) after JSON import (scenario)
+st.session_state.scenario.update(sc)
+st.session_state.scenario = ensure_defaults(st.session_state.scenario)
+
+# 4) the input that crashed
+s["nlaPctOfPublic"] = e3.number_input(
+    "NLA (% of Public)",
+    min_value=0.0, max_value=100.0,
+    value=float(s.get("nlaPctOfPublic", 40.0)),
+    step=1.0
+)
 
 # -----------------------------
 # Defaults
