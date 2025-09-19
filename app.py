@@ -1,4 +1,4 @@
-# app.py — Feasibility Core+ (Streamlit)
+# app.py — Feasibility Core+ (Streamlit, patched)
 # run: streamlit run app.py
 
 import json
@@ -40,18 +40,6 @@ def compute_far_counted(mainAG, mainBG, pcAG, pcBG, paAG, paBG, countParking, co
         far += pcAG + (pcBG if countBasement else 0.0)
         far += paAG + (paBG if countBasement else 0.0)
     return far
-    
-def ensure_defaults(s: dict) -> dict:
-    """Merge missing keys from DEFAULT into scenario dict, keep types consistent."""
-    out = dict(s)
-    for k, v in DEFAULT.items():
-        if k not in out:
-            # keep numeric as float for Streamlit number_input consistency
-            if isinstance(v, (int, float)):
-                out[k] = float(v)
-            else:
-                out[k] = v
-    return out
 
 # -----------------------------
 # Defaults
@@ -89,7 +77,7 @@ DEFAULT = dict(
     publicPctOfGFA=10.0,
     bohPctOfGFA=8.0,
     servicePctOfGFA=2.0,
-    nlaPctOfPublic=40.0,  # NEW: NLA subset of Public
+    nlaPctOfPublic=40.0,  # NLA is a subset of Public
     # toggles (for tests/back-compat)
     countParkingInFAR=True,
     countBasementInFAR=False,
@@ -99,6 +87,14 @@ DEFAULT = dict(
     costParkAutoPerSqm=25000.0,
     budget=500_000_000.0,
 )
+
+def ensure_defaults(s: dict) -> dict:
+    """Fill any missing keys in scenario dict using DEFAULT (keep numeric as float)."""
+    out = dict(s)
+    for k, v in DEFAULT.items():
+        if k not in out:
+            out[k] = float(v) if isinstance(v, (int, float)) else v
+    return out
 
 # -----------------------------
 # Page setup & Theme
@@ -136,13 +132,6 @@ st.title("Feasibility — Core+")
 # -----------------------------
 if "scenario" not in st.session_state:
     st.session_state.scenario = DEFAULT.copy()
-if "scenario" not in st.session_state:
-    st.session_state.scenario = DEFAULT.copy()
-
-# ensure any new fields (e.g., nlaPctOfPublic) are present
-st.session_state.scenario = ensure_defaults(st.session_state.scenario)
-s = st.session_state.scenario
-
 if "custom_costs" not in st.session_state:
     # {id, name, kind:"per_sqm"|"lump_sum", rate: float}
     st.session_state.custom_costs = []
@@ -155,6 +144,8 @@ if "unit_types" not in st.session_state:
 if "id_seed" not in st.session_state:
     st.session_state.id_seed = 2
 
+# ensure defaults for any missing keys (e.g., after code updates)
+st.session_state.scenario = ensure_defaults(st.session_state.scenario)
 s = st.session_state.scenario
 
 # -----------------------------
@@ -164,49 +155,53 @@ colA, colB, colC = st.columns(3)
 
 with colA:
     st.markdown("#### Site & FAR")
-    s["siteArea"] = st.number_input("Site Area (m²)", min_value=0.0, value=float(s["siteArea"]), step=100.0)
-    s["far"] = st.number_input("FAR (1–10)", min_value=RULES["base"]["farRange"][0], max_value=RULES["base"]["farRange"][1], value=float(s["far"]), step=0.1)
+    s["siteArea"] = st.number_input("Site Area (m²)", min_value=0.0, value=float(s.get("siteArea", DEFAULT["siteArea"])), step=100.0)
+    s["far"]      = st.number_input("FAR (1–10)", min_value=RULES["base"]["farRange"][0], max_value=RULES["base"]["farRange"][1], value=float(s.get("far", DEFAULT["far"])), step=0.1)
 
 with colB:
     st.markdown("#### Geometry & Height")
     g1, g2, g3 = st.columns(3, gap="small")
-    s["mainFloorsAG"] = g1.number_input("Main Floors (AG)", min_value=0.0, value=float(s["mainFloorsAG"]), step=1.0)
-    s["mainFloorsBG"] = g2.number_input("Main Floors (BG)", min_value=0.0, value=float(s["mainFloorsBG"]), step=1.0)
-    s["ftf"] = g3.number_input("F2F (m)", min_value=0.0, value=float(s["ftf"]), step=0.1)
+    s["mainFloorsAG"] = g1.number_input("Main Floors (AG)", min_value=0.0, value=float(s.get("mainFloorsAG", DEFAULT["mainFloorsAG"])), step=1.0)
+    s["mainFloorsBG"] = g2.number_input("Main Floors (BG)", min_value=0.0, value=float(s.get("mainFloorsBG", DEFAULT["mainFloorsBG"])), step=1.0)
+    s["ftf"]          = g3.number_input("F2F (m)",          min_value=0.0, value=float(s.get("ftf", DEFAULT["ftf"])), step=0.1)
 
     g4, g5, g6 = st.columns(3, gap="small")
-    s["parkingConFloorsAG"] = g4.number_input("Park Conv (AG)", min_value=0.0, value=float(s["parkingConFloorsAG"]), step=1.0)
-    s["parkingConFloorsBG"] = g5.number_input("Park Conv (BG)", min_value=0.0, value=float(s["parkingConFloorsBG"]), step=1.0)
-    s["maxHeight"] = g6.number_input("Max Height (m)", min_value=0.0, value=float(s["maxHeight"]), step=1.0)
+    s["parkingConFloorsAG"] = g4.number_input("Park Conv (AG)", min_value=0.0, value=float(s.get("parkingConFloorsAG", DEFAULT["parkingConFloorsAG"])), step=1.0)
+    s["parkingConFloorsBG"] = g5.number_input("Park Conv (BG)", min_value=0.0, value=float(s.get("parkingConFloorsBG", DEFAULT["parkingConFloorsBG"])), step=1.0)
+    s["maxHeight"]          = g6.number_input("Max Height (m)", min_value=0.0, value=float(s.get("maxHeight", DEFAULT["maxHeight"])), step=1.0)
 
     g7, g8 = st.columns(2, gap="small")
-    s["parkingAutoFloorsAG"] = g7.number_input("Auto Park (AG)", min_value=0.0, value=float(s["parkingAutoFloorsAG"]), step=1.0)
-    s["parkingAutoFloorsBG"] = g8.number_input("Auto Park (BG)", min_value=0.0, value=float(s["parkingAutoFloorsBG"]), step=1.0)
+    s["parkingAutoFloorsAG"] = g7.number_input("Auto Park (AG)", min_value=0.0, value=float(s.get("parkingAutoFloorsAG", DEFAULT["parkingAutoFloorsAG"])), step=1.0)
+    s["parkingAutoFloorsBG"] = g8.number_input("Auto Park (BG)", min_value=0.0, value=float(s.get("parkingAutoFloorsBG", DEFAULT["parkingAutoFloorsBG"])), step=1.0)
 
     g9, g10, g11 = st.columns(3, gap="small")
-    s["mainFloorPlate"] = g9.number_input("Main Plate (m²)", min_value=0.0, value=float(s["mainFloorPlate"]), step=50.0)
-    s["parkingConPlate"] = g10.number_input("Park Plate (Conv)", min_value=0.0, value=float(s["parkingConPlate"]), step=50.0)
-    s["parkingAutoPlate"] = g11.number_input("Park Plate (Auto)", min_value=0.0, value=float(s["parkingAutoPlate"]), step=50.0)
+    s["mainFloorPlate"]   = g9.number_input("Main Plate (m²)",     min_value=0.0, value=float(s.get("mainFloorPlate", DEFAULT["mainFloorPlate"])), step=50.0)
+    s["parkingConPlate"]  = g10.number_input("Park Plate (Conv)",  min_value=0.0, value=float(s.get("parkingConPlate", DEFAULT["parkingConPlate"])), step=50.0)
+    s["parkingAutoPlate"] = g11.number_input("Park Plate (Auto)",  min_value=0.0, value=float(s.get("parkingAutoPlate", DEFAULT["parkingAutoPlate"])), step=50.0)
+
+    g12, g13 = st.columns(2, gap="small")
+    s["countParkingInFAR"]  = g12.selectbox("Count Parking in FAR?", options=[True, False], index=0 if bool(s.get("countParkingInFAR", True)) else 1)
+    s["countBasementInFAR"] = g13.selectbox("Count Basement in FAR?", options=[True, False], index=0 if bool(s.get("countBasementInFAR", False)) else 1)
 
 with colC:
     st.markdown("#### Parking & Efficiency")
     p1, p2, p3 = st.columns(3, gap="small")
-    s["bayConv"] = p1.number_input("Conv Bay (m²)", min_value=1.0, value=float(s["bayConv"]), step=1.0)
-    conv_c = p2.number_input("Conv Circ (%)", min_value=0.0, max_value=100.0, value=float(s["circConvPct"]*100.0), step=1.0)
-    s["circConvPct"] = conv_c/100.0
+    s["bayConv"]     = p1.number_input("Conv Bay (m²)", min_value=1.0, value=float(s.get("bayConv", DEFAULT["bayConv"])), step=1.0)
+    conv_circ_pct    = p2.number_input("Conv Circ (%)", min_value=0.0, max_value=100.0, value=float(s.get("circConvPct", DEFAULT["circConvPct"])) * 100.0, step=1.0)
+    s["circConvPct"] = conv_circ_pct / 100.0
     p3.markdown(f'<div class="small">eff = <span class="mono">{nf(s["bayConv"]*(1+s["circConvPct"]))}</span> m²/คัน</div>', unsafe_allow_html=True)
 
     p4, p5, p6 = st.columns(3, gap="small")
-    s["bayAuto"] = p4.number_input("Auto Bay (m²)", min_value=1.0, value=float(s["bayAuto"]), step=1.0)
-    auto_c = p5.number_input("Auto Circ (%)", min_value=0.0, max_value=100.0, value=float(s["circAutoPct"]*100.0), step=1.0)
-    s["circAutoPct"] = auto_c/100.0
+    s["bayAuto"]     = p4.number_input("Auto Bay (m²)", min_value=1.0, value=float(s.get("bayAuto", DEFAULT["bayAuto"])), step=1.0)
+    auto_circ_pct    = p5.number_input("Auto Circ (%)", min_value=0.0, max_value=100.0, value=float(s.get("circAutoPct", DEFAULT["circAutoPct"])) * 100.0, step=1.0)
+    s["circAutoPct"] = auto_circ_pct / 100.0
     p6.markdown(f'<div class="small">eff = <span class="mono">{nf(s["bayAuto"]*(1+s["circAutoPct"]))}</span> m²/คัน</div>', unsafe_allow_html=True)
 
     p7, p8, p9 = st.columns(3, gap="small")
-    s["openLotArea"] = p7.number_input("Open-lot Area (m²)", min_value=0.0, value=float(s["openLotArea"]), step=50.0)
-    s["openLotBay"] = p8.number_input("Open-lot Bay (m²/คัน)", min_value=1.0, value=float(s["openLotBay"]), step=1.0)
-    open_c = p9.number_input("Open-lot Circ (%)", min_value=0.0, max_value=100.0, value=float(s["openLotCircPct"]*100.0), step=1.0)
-    s["openLotCircPct"] = open_c/100.0
+    s["openLotArea"]    = p7.number_input("Open-lot Area (m²)",   min_value=0.0, value=float(s.get("openLotArea", DEFAULT["openLotArea"])), step=50.0)
+    s["openLotBay"]     = p8.number_input("Open-lot Bay (m²/คัน)", min_value=1.0, value=float(s.get("openLotBay", DEFAULT["openLotBay"])), step=1.0)
+    open_circ_pct       = p9.number_input("Open-lot Circ (%)",    min_value=0.0, max_value=100.0, value=float(s.get("openLotCircPct", DEFAULT["openLotCircPct"])) * 100.0, step=1.0)
+    s["openLotCircPct"] = open_circ_pct / 100.0
     st.caption(f"eff (open-lot) = {nf(s['openLotBay']*(1+s['openLotCircPct']))} m²/คัน")
 
 st.divider()
@@ -215,19 +210,19 @@ colD, colE = st.columns(2)
 with colD:
     st.markdown("#### Efficiency Blocks")
     e1, e2, e3, e4, e5 = st.columns(5, gap="small")
-    s["gfaOverCfaPct"]   = e1.number_input("GFA from CFA (%)",   min_value=0.0, max_value=100.0, value=float(s["gfaOverCfaPct"]), step=1.0)
-    s["publicPctOfGFA"]  = e2.number_input("Public (% of GFA)",  min_value=0.0, max_value=100.0, value=float(s["publicPctOfGFA"]), step=1.0)
-    s["nlaPctOfPublic"] = e3.number_input("NLA (% of Public)",   min_value=0.0, max_value=100.0, value=float(s.get("nlaPctOfPublic", 40.0)), step=1.0)
-    s["bohPctOfGFA"]     = e4.number_input("BOH (% of GFA)",     min_value=0.0, max_value=100.0, value=float(s["bohPctOfGFA"]), step=1.0)
-    s["servicePctOfGFA"] = e5.number_input("Service (% of GFA)", min_value=0.0, max_value=100.0, value=float(s["servicePctOfGFA"]), step=1.0)
+    s["gfaOverCfaPct"]   = e1.number_input("GFA from CFA (%)",   min_value=0.0, max_value=100.0, value=float(s.get("gfaOverCfaPct", DEFAULT["gfaOverCfaPct"])), step=1.0)
+    s["publicPctOfGFA"]  = e2.number_input("Public (% of GFA)",  min_value=0.0, max_value=100.0, value=float(s.get("publicPctOfGFA", DEFAULT["publicPctOfGFA"])), step=1.0)
+    s["nlaPctOfPublic"]  = e3.number_input("NLA (% of Public)",  min_value=0.0, max_value=100.0, value=float(s.get("nlaPctOfPublic", DEFAULT["nlaPctOfPublic"])), step=1.0)
+    s["bohPctOfGFA"]     = e4.number_input("BOH (% of GFA)",     min_value=0.0, max_value=100.0, value=float(s.get("bohPctOfGFA", DEFAULT["bohPctOfGFA"])), step=1.0)
+    s["servicePctOfGFA"] = e5.number_input("Service (% of GFA)", min_value=0.0, max_value=100.0, value=float(s.get("servicePctOfGFA", DEFAULT["servicePctOfGFA"])), step=1.0)
 
 with colE:
     st.markdown("#### Costs (฿/m²) & Budget")
     c1, c2, c3, c4 = st.columns(4, gap="small")
-    s["costMainPerSqm"]     = c1.number_input("Main",         min_value=0.0, value=float(s["costMainPerSqm"]), step=500.0)
-    s["costParkConvPerSqm"] = c2.number_input("Parking Conv", min_value=0.0, value=float(s["costParkConvPerSqm"]), step=500.0)
-    s["costParkAutoPerSqm"] = c3.number_input("Parking Auto", min_value=0.0, value=float(s["costParkAutoPerSqm"]), step=500.0)
-    s["budget"]             = c4.number_input("Budget (฿)",   min_value=0.0, value=float(s["budget"]), step=1_000_000.0)
+    s["costMainPerSqm"]     = c1.number_input("Main",         min_value=0.0, value=float(s.get("costMainPerSqm", DEFAULT["costMainPerSqm"])), step=500.0)
+    s["costParkConvPerSqm"] = c2.number_input("Parking Conv", min_value=0.0, value=float(s.get("costParkConvPerSqm", DEFAULT["costParkConvPerSqm"])), step=500.0)
+    s["costParkAutoPerSqm"] = c3.number_input("Parking Auto", min_value=0.0, value=float(s.get("costParkAutoPerSqm", DEFAULT["costParkAutoPerSqm"])), step=500.0)
+    s["budget"]             = c4.number_input("Budget (฿)",   min_value=0.0, value=float(s.get("budget", DEFAULT["budget"])), step=1_000_000.0)
 
 st.divider()
 
@@ -303,22 +298,21 @@ avgPerCFA    = (projectCost / totalCFA) if totalCFA > 0 else 0.0
 # -----------------------------
 st.markdown("#### Unit Types & Parking Demand")
 u1, u2, u3, u4, u5 = st.columns([0.2, 0.2, 0.2, 0.2, 0.2])
-demand_mode = u1.selectbox("Legal Mode", options=["per bedroom", "per unit", "both (max)"], index=2)
-legal_per_bed = u2.number_input("Legal: cars/bed", min_value=0.0, value=0.0, step=0.1)
+demand_mode   = u1.selectbox("Legal Mode", options=["per bedroom", "per unit", "both (max)"], index=2)
+legal_per_bed = u2.number_input("Legal: cars/bed",  min_value=0.0, value=0.0, step=0.1)
 legal_per_unit= u3.number_input("Legal: cars/unit", min_value=0.0, value=0.0, step=0.1)
 proj_per_bed  = u4.number_input("Project target: cars/bed", min_value=0.0, value=0.5, step=0.05)
 conv_share_pct= u5.slider("Target Conv share (%)", min_value=0, max_value=100, value=70, step=1)
 
 st.caption("กำหนด Unit type (ขนาด m², จำนวนห้องนอน, สัดส่วน % ของพื้นที่ขายได้ (NSA))")
 
-# editor-like simple list
 to_del = []
-for i, ut in enumerate(st.session_state.unit_types):
+for i, ut in enumerate(st.session_state.get("unit_types", [])):
     cN, cS, cB, cP, cD = st.columns([0.28, 0.18, 0.18, 0.18, 0.18])
-    ut["name"]      = cN.text_input(f"Name #{ut['id']}", value=ut["name"], key=f"name_{ut['id']}")
-    ut["size_sqm"]  = cS.number_input(f"Size m² #{ut['id']}", min_value=1.0, value=float(ut["size_sqm"]), step=1.0, key=f"size_{ut['id']}")
-    ut["bedrooms"]  = cB.number_input(f"Beds #{ut['id']}", min_value=0.0, value=float(ut["bedrooms"]), step=0.5, key=f"bed_{ut['id']}")
-    ut["share_pct"] = cP.number_input(f"Share % #{ut['id']}", min_value=0.0, max_value=100.0, value=float(ut["share_pct"]), step=1.0, key=f"share_{ut['id']}")
+    ut["name"]      = cN.text_input(f"Name #{ut['id']}", value=ut.get("name","Type"), key=f"name_{ut['id']}")
+    ut["size_sqm"]  = cS.number_input(f"Size m² #{ut['id']}", min_value=1.0, value=float(ut.get("size_sqm", 30.0)), step=1.0, key=f"size_{ut['id']}")
+    ut["bedrooms"]  = cB.number_input(f"Beds #{ut['id']}",    min_value=0.0, value=float(ut.get("bedrooms", 1.0)), step=0.5, key=f"bed_{ut['id']}")
+    ut["share_pct"] = cP.number_input(f"Share % #{ut['id']}", min_value=0.0, max_value=100.0, value=float(ut.get("share_pct", 10.0)), step=1.0, key=f"share_{ut['id']}")
     if cD.button(f"🗑️ Remove #{ut['id']}", key=f"del_unit_{ut['id']}"):
         to_del.append(ut["id"])
 if to_del:
@@ -416,12 +410,13 @@ with cF:
     st.markdown(f"Units (est.): **{int(total_units)}**  · Beds: **{int(total_bedrooms)}**")
     st.markdown(f"Program demand (by beds): **{math.ceil(prog_required_by_bed)}**")
     if demand_mode == "per unit":
-        st.markdown(f"Legal (per unit): **{math.ceil(legal_units)}**  → **{demand_mode}** selected")
+        st.markdown(f"Legal (per unit): **{math.ceil(legal_units)}**  → **per unit**")
     elif demand_mode == "per bedroom":
-        st.markdown(f"Legal (per bedroom): **{math.ceil(legal_beds)}**  → **{demand_mode}** selected")
+        st.markdown(f"Legal (per bedroom): **{math.ceil(legal_beds)}**  → **per bedroom**")
     else:
         st.markdown(
-    f"Legal: max(unit=**{math.ceil(legal_units)}**, bed=**{math.ceil(legal_beds)}**) → **both (max)**")
+            f"Legal: max(unit=**{math.ceil(legal_units)}**, bed=**{math.ceil(legal_beds)}**) → **both (max)**"
+        )
     legal_req = math.ceil(legal_required)
     prog_req  = math.ceil(prog_required_by_bed)
     worst_req = max(legal_req, prog_req)
@@ -452,7 +447,9 @@ with cY:
                 for k, v in sc.items():
                     if isinstance(v, (int, float)): sc[k] = float(v)
                 st.session_state.scenario.update(sc)
-                    st.session_state.scenario = ensure_defaults(st.session_state.scenario)
+                # ensure any new keys after update
+                st.session_state.scenario = ensure_defaults(st.session_state.scenario)
+                s = st.session_state.scenario
             if "custom_costs" in data and isinstance(data["custom_costs"], list):
                 cc = []
                 for i in data["custom_costs"]:
@@ -502,7 +499,7 @@ tests = [
     ("calcDisabledParking(250)",calc_disabled_parking(250),5),
     ("computeFarCounted(default flags)", far_expected, far_expected),
     ("computeFarCounted(no parking, no basement)", compute_far_counted(100,20,30,40,50,60, False, False), 100.0),
-    ("computeFarCounted(parking+basement)", compute_far_counted(100,20,30,40,50,60, True, True), 300.0),
+    ("computeFarCounted(parking+basement)",       compute_far_counted(100,20,30,40,50,60, True,  True ), 300.0),
     ("openLotCars formula", openLotCars, open_lot_expected_cars),
     ("NLA is subset of Public", round(nla,3) <= round(publicArea,3), True),
     ("DE ratio bounds", 0.0 <= de_GFA_over_CFA <= 1.0, True),
