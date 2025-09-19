@@ -1,1210 +1,408 @@
-import React, { useMemo, useRef, useState } from "react";
-import {
-  Download,
-  Ruler,
-  Building2,
-  Car,
-  Calculator,
-  Factory,
-  TrendingUp,
-  TriangleAlert,
-  Plus,
-  Trash2,
-  FileUp,
-  BarChart3,
-  LayoutGrid,
-} from "lucide-react";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
+# app.py
+import math
+import io
+import json
+import pandas as pd
+import streamlit as st
+import plotly.express as px
 
-// =============================================================
-// Helpers
-// =============================================================
-const nf = (n, digits = 2) =>
-  isFinite(Number(n)) ? Number(n).toLocaleString(undefined, { maximumFractionDigits: digits }) : "–";
-const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+# =============================
+# Helpers (เทียบเคียง logic เดิม)
+# =============================
+def nf(n, digits=2):
+    try:
+        x = float(n)
+        return f"{x:,.{digits}f}"
+    except:
+        return "–"
 
-function createCSV(rows) {
-  if (!rows || rows.length === 0) return "";
-  const headers = Object.keys(rows[0]);
-  const lines = [headers.join(","), ...rows.map((r) => headers.map((h) => r[h]).join(","))];
-  return lines.join("\n");
+def clamp(v, lo, hi):
+    return min(hi, max(lo, v))
+
+def create_csv(rows):
+    if not rows:
+        return ""
+    headers = list(rows[0].keys())
+    lines = [",".join(headers)]
+    for r in rows:
+        lines.append(",".join(str(r.get(h, "")) for h in headers))
+    return "\n".join(lines)
+
+def calc_disabled_parking(total_cars):
+    # 0 → 0; ≤50 → 2; 51–100 → 3; >100 → +1 per 100 cars thereafter
+    if total_cars <= 0: return 0
+    if total_cars <= 50: return 2
+    if total_cars <= 100: return 3
+    extra_hundreds = math.ceil((total_cars - 100) / 100)
+    return 3 + max(0, extra_hundreds)
+
+def compute_far_counted(mainAG, mainBG, pcAG, pcBG, paAG, paBG, countParking, countBasement):
+    far = 0
+    far += mainAG + (mainBG if countBasement else 0)
+    if countParking:
+        far += pcAG + (pcBG if countBasement else 0)
+        far += paAG + (paBG if countBasement else 0)
+    return far
+
+# =============================
+# Rules / Defaults (ยกมาจากแอป)
+# =============================
+BUILDING_TYPES = ["Housing", "Hi-Rise", "Low-Rise", "Public Building", "Office Building", "Hotel"]
+
+RULES = {
+    "base": { "farRange": [1, 10] },
+    "building": {
+        "Housing": {"minOSR": 30, "greenPctOfOSR": None},
+        "Hi-Rise": {"minOSR": 10, "greenPctOfOSR": 50},
+        "Low-Rise": {"minOSR": 10, "greenPctOfOSR": 50},
+        "Public Building": {"minOSR": None, "greenPctOfOSR": None},
+        "Office Building": {"minOSR": None, "greenPctOfOSR": None},
+        "Hotel": {"minOSR": 10, "greenPctOfOSR": 40},
+    }
 }
 
-// Disabled parking rule used in sheet: 0 → 0; ≤50 → 2; 51–100 → 3; >100 → +1 per 100 cars thereafter
-function calcDisabledParking(totalCars) {
-  if (totalCars <= 0) return 0;
-  if (totalCars <= 50) return 2;
-  if (totalCars <= 100) return 3;
-  const extraHundreds = Math.ceil((totalCars - 100) / 100);
-  return 3 + Math.max(0, extraHundreds);
-}
+DEFAULT = dict(
+    # Core site & zoning
+    siteArea=8000,
+    far=5.0,
+    bType="Housing",
+    osr=30.0,
+    greenPctOfOSR=40.0,
 
-// FAR counting helper
-function computeFarCounted(mainAG, mainBG, pcAG, pcBG, paAG, paBG, countParking, countBasement) {
-  let farCounted = 0;
-  farCounted += mainAG + (countBasement ? mainBG : 0);
-  if (countParking) {
-    farCounted += pcAG + (countBasement ? pcBG : 0);
-    farCounted += paAG + (countBasement ? paBG : 0);
-  }
-  return farCounted;
-}
+    # Geometry
+    mainFloorsAG=20, mainFloorsBG=0,
+    parkingConFloorsAG=3, parkingConFloorsBG=0,
+    parkingAutoFloorsAG=0, parkingAutoFloorsBG=0,
+    ftf=3.2, maxHeight=120.0,
 
-// Currency conversion (kept for future use)
-const CURRENCIES = ["THB", "USD"];
-function convertCurrency(value, from, to, fxTHBperUSD) {
-  if (from === to) return value;
-  if (from === "USD" && to === "THB") return value * fxTHBperUSD;
-  if (from === "THB" && to === "USD") return value / Math.max(1e-9, fxTHBperUSD);
-  return value;
-}
+    # Plates (m²)
+    mainFloorPlate=1500.0,
+    parkingConPlate=1200.0,
+    parkingAutoPlate=800.0,
 
-// =============================================================
-// Legal Presets (TH) — **Replace/extend with your locality rules as needed**
-// =============================================================
-const BUILDING_TYPES = ["Housing", "Hi-Rise", "Low-Rise", "Public Building", "Office Building", "Hotel"];
-const PRESETS = ["None", "TH Condo", "TH Hotel"];
+    # Parking efficiency (structured)
+    bayConv=25.0,    circConvPct=0.0,
+    bayAuto=16.0,    circAutoPct=0.0,
 
-const RULES = {
-  base: { farRange: [1, 10] },
-  building: {
-    Housing: { minOSR: 30, greenPctOfOSR: null },
-    "Hi-Rise": { minOSR: 10, greenPctOfOSR: 50 },
-    "Low-Rise": { minOSR: 10, greenPctOfOSR: 50 },
-    "Public Building": { minOSR: null, greenPctOfOSR: null },
-    "Office Building": { minOSR: null, greenPctOfOSR: null },
-    Hotel: { minOSR: 10, greenPctOfOSR: 40 },
-  },
-  presets: {
-    None: {
-      lockOSR: false,
-      lockGreenPct: false,
-      bType: "Housing",
-      osr: 15,
-      greenPct: 40,
-      countParkingInFAR: true,
-      countBasementInFAR: false,
-    },
-    "TH Condo": {
-      lockOSR: true,
-      lockGreenPct: true,
-      bType: "Hi-Rise",
-      osr: 10,
-      greenPct: 50,
-      countParkingInFAR: false,
-      countBasementInFAR: false,
-    },
-    "TH Hotel": {
-      lockOSR: true,
-      lockGreenPct: false,
-      bType: "Hotel",
-      osr: 10,
-      greenPct: 40,
-      countParkingInFAR: false,
-      countBasementInFAR: false,
-    },
-  },
-};
+    # Open-lot (ไม่นับ FAR แต่มีจำนวนคัน+ต้นทุน)
+    openLotArea=0.0, openLotBay=25.0, openLotCircPct=0.0,
 
-function suggestedOSR(type) {
-  const r = RULES.building[type];
-  return r?.minOSR ?? 15;
-}
-function suggestedGreenPct(type) {
-  const r = RULES.building[type];
-  return r?.greenPctOfOSR ?? 40;
-}
+    # Efficiency ratios
+    nlaPctOfCFA=70.0,
+    nsaPctOfCFA=80.0,
+    gfaOverCfaPct=95.0,
 
-// =============================================================
-// Scenario type
-// =============================================================
-const DEFAULT_SCENARIO = {
-  // Core site & zoning
-  siteArea: 8000,
-  far: 5,
-  bType: "Housing",
-  osr: 30,
-  greenPctOfOSR: 40,
+    # FAR toggles
+    countParkingInFAR=True,
+    countBasementInFAR=False,
 
-  // Geometry
-  mainFloorsAG: 20,
-  mainFloorsBG: 0,
-  parkingConFloorsAG: 3,
-  parkingConFloorsBG: 0,
-  parkingAutoFloorsAG: 0,
-  parkingAutoFloorsBG: 0,
-  ftf: 3.2,
-  maxHeight: 120,
+    # Costs
+    costArchPerSqm=16000.0,
+    costStructPerSqm=22000.0,
+    costMEPPerSqm=20000.0,
+    costGreenPerSqm=4500.0,
+    costConventionalPerCar=125000.0,
+    costAutoPerCar=432000.0,
+    costOpenLotPerCar=60000.0,
 
-  // Plates (m²)
-  mainFloorPlate: 1500,
-  parkingConPlate: 1200,
-  parkingAutoPlate: 800,
+    # Budget
+    budget=500_000_000.0,
+)
 
-  // Parking efficiency (structured)
-  bayConv: 25,
-  circConvPct: 0.0,
-  bayAuto: 16,
-  circAutoPct: 0.0,
+# =============================
+# Compute block
+# =============================
+def compute(state: dict):
+    far_min, far_max = RULES["base"]["farRange"]
+    far = clamp(float(state["far"]), far_min, far_max)
+    maxGFA = state["siteArea"] * far
 
-  // Open-lot parking (at-grade, outside building → NOT counted in FAR)
-  openLotArea: 0, // m² of open lot used for parking
-  openLotBay: 25, // m² per car, net
-  openLotCircPct: 0.0, // % circulation for open lot
+    # OSR & Green
+    openSpaceArea = (state["osr"] / 100.0) * state["siteArea"]
+    greenArea = (state["greenPctOfOSR"] / 100.0) * openSpaceArea
 
-  // Eff ratios
-  nlaPctOfCFA: 70,
-  nsaPctOfCFA: 80,
-  gfaOverCfaPct: 95,
+    # CFA
+    mainCFA_AG = state["mainFloorsAG"] * state["mainFloorPlate"]
+    mainCFA_BG = state["mainFloorsBG"] * state["mainFloorPlate"]
+    parkConCFA_AG = state["parkingConFloorsAG"] * state["parkingConPlate"]
+    parkConCFA_BG = state["parkingConFloorsBG"] * state["parkingConPlate"]
+    parkAutoCFA_AG = state["parkingAutoFloorsAG"] * state["parkingAutoPlate"]
+    parkAutoCFA_BG = state["parkingAutoFloorsBG"] * state["parkingAutoPlate"]
 
-  // FAR rules toggles
-  countParkingInFAR: true,
-  countBasementInFAR: false,
+    mainCFA = mainCFA_AG + mainCFA_BG
+    parkConCFA = parkConCFA_AG + parkConCFA_BG
+    parkAutoCFA = parkAutoCFA_AG + parkAutoCFA_BG
+    totalCFA = mainCFA + parkConCFA + parkAutoCFA
 
-  // Cost
-  costArchPerSqm: 16000,
-  costStructPerSqm: 22000,
-  costMEPPerSqm: 20000,
-  costGreenPerSqm: 4500,
-  costConventionalPerCar: 125000,
-  costAutoPerCar: 432000,
-  costOpenLotPerCar: 60000, // cheaper per stall assumption
+    # Height
+    estHeight = state["ftf"] * (state["mainFloorsAG"] + state["parkingConFloorsAG"] + state["parkingAutoFloorsAG"])
+    heightOk = estHeight <= state["maxHeight"]
 
-  customCosts: [],
+    # Parking eff area / car
+    effAreaConCar  = state["bayConv"] * (1 + state["circConvPct"])
+    effAreaAutoCar = state["bayAuto"] * (1 + state["circAutoPct"])
+    effAreaOpenCar = state["openLotBay"] * (1 + state["openLotCircPct"])
 
-  // Budget
-  budget: 500000000, // ฿500m default
-};
+    convCarsPerFloor = math.floor(state["parkingConPlate"] / max(1, effAreaConCar))
+    autoCarsPerFloor = math.floor(state["parkingAutoPlate"] / max(1, effAreaAutoCar))
 
-// single scenario compute
-function useScenarioCompute(state) {
-  const effAreaConCar = useMemo(() => state.bayConv * (1 + state.circConvPct), [state.bayConv, state.circConvPct]);
-  const effAreaAutoCar = useMemo(() => state.bayAuto * (1 + state.circAutoPct), [state.bayAuto, state.circAutoPct]);
-  const effAreaOpenCar = useMemo(() => state.openLotBay * (1 + state.openLotCircPct), [state.openLotBay, state.openLotCircPct]);
+    totalConvCars = convCarsPerFloor * (state["parkingConFloorsAG"] + state["parkingConFloorsBG"])
+    totalAutoCars = autoCarsPerFloor * (state["parkingAutoFloorsAG"] + state["parkingAutoFloorsBG"])
+    openLotCars   = math.floor(state["openLotArea"] / max(1, effAreaOpenCar))
 
-  const derived = useMemo(() => {
-    const far = clamp(state.far, RULES.base.farRange[0], RULES.base.farRange[1]);
-    const maxGFA = state.siteArea * far;
+    totalCars = totalConvCars + totalAutoCars + openLotCars
+    disabledCars = calc_disabled_parking(totalCars)
 
-    // OSR & Green
-    const openSpaceArea = (state.osr / 100) * state.siteArea;
-    const greenArea = (state.greenPctOfOSR / 100) * openSpaceArea;
+    # FAR-counted (ไม่รวม open-lot)
+    farCounted = compute_far_counted(
+        mainCFA_AG, mainCFA_BG,
+        parkConCFA_AG, parkConCFA_BG,
+        parkAutoCFA_AG, parkAutoCFA_BG,
+        state["countParkingInFAR"], state["countBasementInFAR"]
+    )
+    farOk = farCounted <= maxGFA
 
-    // CFA (structured)
-    const mainCFA_AG = state.mainFloorsAG * state.mainFloorPlate;
-    const mainCFA_BG = state.mainFloorsBG * state.mainFloorPlate;
-    const parkConCFA_AG = state.parkingConFloorsAG * state.parkingConPlate;
-    const parkConCFA_BG = state.parkingConFloorsBG * state.parkingConPlate;
-    const parkAutoCFA_AG = state.parkingAutoFloorsAG * state.parkingAutoPlate;
-    const parkAutoCFA_BG = state.parkingAutoFloorsBG * state.parkingAutoPlate;
-    const mainCFA = mainCFA_AG + mainCFA_BG;
-    const parkConCFA = parkConCFA_AG + parkConCFA_BG;
-    const parkAutoCFA = parkAutoCFA_AG + parkAutoCFA_BG;
-    const totalCFA = mainCFA + parkConCFA + parkAutoCFA;
+    # Efficiency
+    nla = (state["nlaPctOfCFA"] / 100.0) * totalCFA
+    nsa = (state["nsaPctOfCFA"] / 100.0) * totalCFA
+    gfa = (state["gfaOverCfaPct"] / 100.0) * totalCFA
 
-    // Height (AG only)
-    const estHeight = state.ftf * (state.mainFloorsAG + state.parkingConFloorsAG + state.parkingAutoFloorsAG);
-    const heightOk = estHeight <= state.maxHeight;
+    # Costs
+    baseCostPerSqm = state["costArchPerSqm"] + state["costStructPerSqm"] + state["costMEPPerSqm"]
+    constructionCost = totalCFA * baseCostPerSqm
+    greenCost = greenArea * state["costGreenPerSqm"]
+    parkingCost = (
+        totalConvCars * state["costConventionalPerCar"] +
+        totalAutoCars * state["costAutoPerCar"] +
+        openLotCars   * state["costOpenLotPerCar"]
+    )
+    capexTotal = constructionCost + greenCost + parkingCost
+    budgetOk = (capexTotal <= state["budget"]) if state["budget"] > 0 else True
 
-    // Parking counts by effective area/car (structured)
-    const convCarsPerFloor = Math.floor(state.parkingConPlate / Math.max(1, effAreaConCar));
-    const autoCarsPerFloor = Math.floor(state.parkingAutoPlate / Math.max(1, effAreaAutoCar));
-    const totalConvCars = convCarsPerFloor * (state.parkingConFloorsAG + state.parkingConFloorsBG);
-    const totalAutoCars = autoCarsPerFloor * (state.parkingAutoFloorsAG + state.parkingAutoFloorsBG);
-
-    // Open-lot cars (at-grade outside building) → NOT part of FAR, derived from area
-    const openLotCars = Math.floor(state.openLotArea / Math.max(1, effAreaOpenCar));
-
-    // Totals
-    const totalCars = totalConvCars + totalAutoCars + openLotCars;
-    const disabledCars = calcDisabledParking(totalCars);
-
-    // FAR-counted (no open-lot)
-    const farCounted = computeFarCounted(
-      mainCFA_AG,
-      mainCFA_BG,
-      parkConCFA_AG,
-      parkConCFA_BG,
-      parkAutoCFA_AG,
-      parkAutoCFA_BG,
-      state.countParkingInFAR,
-      state.countBasementInFAR
-    );
-    const farOk = farCounted <= maxGFA;
-
-    // Efficiency
-    const nla = (state.nlaPctOfCFA / 100) * totalCFA;
-    const nsa = (state.nsaPctOfCFA / 100) * totalCFA;
-    const gfa = (state.gfaOverCfaPct / 100) * totalCFA;
-
-    const baseCostPerSqm = state.costArchPerSqm + state.costStructPerSqm + state.costMEPPerSqm;
-    const constructionCost = totalCFA * baseCostPerSqm;
-    const greenCost = greenArea * state.costGreenPerSqm;
-    const parkingCost =
-      totalConvCars * state.costConventionalPerCar + totalAutoCars * state.costAutoPerCar + openLotCars * state.costOpenLotPerCar;
-
-    const customCostTotal = (state.customCosts || []).reduce((sum, i) => {
-      if (i.kind === "per_sqm") return sum + i.rate * totalCFA;
-      if (i.kind === "per_car_conv") return sum + i.rate * totalConvCars;
-      if (i.kind === "per_car_auto") return sum + i.rate * totalAutoCars;
-      return sum + i.rate;
-    }, 0);
-
-    const capexTotal = constructionCost + greenCost + parkingCost + customCostTotal;
-    const budgetOk = state.budget > 0 ? capexTotal <= state.budget : true;
-
-    // Legal checks (based on bType)
-    const rule = RULES.building[state.bType] || {};
-    const osrOk = rule.minOSR != null ? state.osr >= rule.minOSR : true;
-    const greenRule = rule.greenPctOfOSR;
-    const greenPctOk = greenRule != null ? state.greenPctOfOSR >= greenRule : true; // treat rule as minimum requirement
+    # Legal
+    rule = RULES["building"].get(state["bType"], {})
+    osrOk = (state["osr"] >= rule.get("minOSR")) if (rule.get("minOSR") is not None) else True
+    greenRule = rule.get("greenPctOfOSR")
+    greenPctOk = (state["greenPctOfOSR"] >= greenRule) if (greenRule is not None) else True
 
     return {
-      maxGFA,
-      openSpaceArea,
-      greenArea,
-      mainCFA_AG,
-      mainCFA_BG,
-      mainCFA,
-      parkConCFA_AG,
-      parkConCFA_BG,
-      parkConCFA,
-      parkAutoCFA_AG,
-      parkAutoCFA_BG,
-      parkAutoCFA,
-      totalCFA,
-      farCounted,
-      farOk,
-      estHeight,
-      heightOk,
-      convCarsPerFloor,
-      autoCarsPerFloor,
-      totalConvCars,
-      totalAutoCars,
-      openLotCars,
-      totalCars,
-      disabledCars,
-      nla,
-      nsa,
-      gfa,
-      baseCostPerSqm,
-      constructionCost,
-      greenCost,
-      parkingCost,
-      customCostTotal,
-      capexTotal,
-      budgetOk,
-      osrOk,
-      greenPctOk,
-      // helpers
-      effAreaOpenCar,
-    };
-  }, [state, effAreaConCar, effAreaAutoCar, effAreaOpenCar]);
+        "maxGFA": maxGFA,
+        "openSpaceArea": openSpaceArea,
+        "greenArea": greenArea,
+        "mainCFA_AG": mainCFA_AG,
+        "mainCFA_BG": mainCFA_BG,
+        "parkConCFA": parkConCFA,
+        "parkAutoCFA": parkAutoCFA,
+        "totalCFA": totalCFA,
+        "farCounted": farCounted,
+        "farOk": farOk,
+        "estHeight": estHeight,
+        "heightOk": heightOk,
 
-  return { effAreaConCar, effAreaAutoCar, effAreaOpenCar, derived };
-}
+        "convCarsPerFloor": convCarsPerFloor,
+        "autoCarsPerFloor": autoCarsPerFloor,
+        "totalConvCars": totalConvCars,
+        "totalAutoCars": totalAutoCars,
+        "openLotCars": openLotCars,
+        "totalCars": totalCars,
+        "disabledCars": disabledCars,
 
-// =============================================================
-// Scenario Card (no undefined components; no Chip usage)
-// =============================================================
-function ScenarioCard({ scenario, preset, onUpdate, onRemove, currency, fxTHBperUSD }) {
-  const { effAreaConCar, effAreaAutoCar, effAreaOpenCar, derived } = useScenarioCompute(scenario);
-  const rule = RULES.building[scenario.bType] || {};
-  const farMin = RULES.base.farRange[0];
-  const farMax = RULES.base.farRange[1];
+        "nla": nla, "nsa": nsa, "gfa": gfa,
+        "baseCostPerSqm": baseCostPerSqm,
+        "constructionCost": constructionCost,
+        "greenCost": greenCost,
+        "parkingCost": parkingCost,
+        "capexTotal": capexTotal,
+        "budgetOk": budgetOk,
 
-  const warnings = [];
-  if (!derived.farOk) warnings.push("FAR เกิน Max GFA");
-  if (!derived.heightOk) warnings.push("ความสูงเกิน Max Height");
-  if (rule.minOSR != null && !derived.osrOk) warnings.push(`OSR ต่ำกว่าขั้นต่ำ ${rule.minOSR}%`);
-  if (rule.greenPctOfOSR != null && !derived.greenPctOk) warnings.push(`Green % ต่ำกว่าขั้นต่ำ ${rule.greenPctOfOSR}% ของ OSR`);
-  if (!derived.budgetOk) warnings.push("CAPEX เกินงบประมาณ");
+        "osrOk": osrOk, "greenPctOk": greenPctOk,
 
-  const curSymbol = currency === "THB" ? "฿" : "$";
-  const sqmLabel = `${curSymbol}/m²`;
+        "effAreaConCar": effAreaConCar,
+        "effAreaAutoCar": effAreaAutoCar,
+        "effAreaOpenCar": effAreaOpenCar,
+    }
 
-  const capexData = useMemo(
-    () => [
-      { name: "Construction", value: Math.max(0, derived.constructionCost) },
-      { name: "Green", value: Math.max(0, derived.greenCost) },
-      { name: "Parking", value: Math.max(0, derived.parkingCost) },
-      { name: "Custom", value: Math.max(0, derived.customCostTotal) },
-    ],
-    [derived.constructionCost, derived.greenCost, derived.parkingCost, derived.customCostTotal]
-  );
+# =============================
+# UI
+# =============================
+st.set_page_config(page_title="Feasibility App (TH) — Streamlit", layout="wide")
+st.title("🏗️ Feasibility App (TH) — Streamlit")
 
-  const COLORS = ["#3b82f6", "#22c55e", "#f97316", "#a855f7"];
+# Sidebar inputs
+with st.sidebar:
+    st.header("Scenario")
+    s = {**DEFAULT}
 
-  const fileRef = useRef(null);
-  const handleExportCSV = () => {
-    const s = scenario;
-    const rows = Object.entries(s)
-      .filter(([k]) => k !== "id")
-      .map(([Field, Value]) => ({ Field, Value }));
-    const csv = createCSV(rows);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", `${(s.name || "scenario").replace(/\s+/g, "_")}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    link.parentNode?.removeChild(link);
-  };
-  const handleImportCSV = (file) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const text = String(reader.result || "");
-        const lines = text.split(/\r?\n/).filter(Boolean);
-        // Expect Field,Value header
-        const entries = lines
-          .slice(1)
-          .map((line) => {
-            const idx = line.indexOf(",");
-            if (idx < 0) return null;
-            const k = line.slice(0, idx).trim();
-            const v = line.slice(idx + 1).trim();
-            const num = Number(v);
-            return [k, isFinite(num) && v.match(/^[-+]?\d+(\.\d+)?$/) ? num : v];
-          })
-          .filter(Boolean);
-        const patch = Object.fromEntries(entries);
-        onUpdate(scenario.id, patch);
-      } catch (e) {
-        alert("Import failed: " + e);
-      }
-    };
-    reader.readAsText(file);
-  };
+    colA, colB = st.columns(2)
+    s["siteArea"] = colA.number_input("Site Area (m²)", min_value=0.0, value=DEFAULT["siteArea"], step=100.0)
+    s["far"] = colB.number_input("FAR (1–10)", min_value=1.0, max_value=10.0, value=float(DEFAULT["far"]), step=0.1)
 
-  return (
-    <div className="p-4 rounded-2xl bg-white shadow border space-y-4">
-      <div className="flex items-center gap-3">
-        <h2 className="font-semibold">Scenario: {scenario.name}</h2>
-        <button onClick={() => onRemove(scenario.id)} className="ml-auto text-neutral-500 hover:text-red-600">
-          <Trash2 className="w-5 h-5" />
-        </button>
-      </div>
+    s["bType"] = st.selectbox("Building Type", BUILDING_TYPES, index=BUILDING_TYPES.index(DEFAULT["bType"]))
+    s["osr"] = st.number_input("OSR (%)", min_value=0.0, max_value=100.0, value=DEFAULT["osr"], step=1.0)
+    s["greenPctOfOSR"] = st.number_input("Green (% of OSR)", min_value=0.0, max_value=100.0, value=DEFAULT["greenPctOfOSR"], step=1.0)
 
-      {/* Inputs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="p-3 rounded-xl border">
-          <h3 className="font-medium text-sm flex items-center gap-2">
-            <Ruler className="w-4 h-4" /> Site & Zoning
-          </h3>
-          <div className="grid grid-cols-2 gap-3 mt-2 text-sm">
-            <label>
-              Site Area (m²)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.siteArea}
-                onChange={(e) => onUpdate(scenario.id, { siteArea: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label>
-              FAR (1–10)
-              <input
-                type="number"
-                min={RULES.base.farRange[0]}
-                max={RULES.base.farRange[1]}
-                step={0.1}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.far}
-                onChange={(e) =>
-                  onUpdate(scenario.id, { far: clamp(Number(e.target.value), RULES.base.farRange[0], RULES.base.farRange[1]) })
-                }
-              />
-            </label>
-            <label className="col-span-2">
-              Building Type
-              <select
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.bType}
-                onChange={(e) =>
-                  onUpdate(scenario.id, {
-                    bType: e.target.value,
-                    osr: suggestedOSR(e.target.value),
-                    greenPctOfOSR: suggestedGreenPct(e.target.value),
-                  })
-                }
-              >
-                {BUILDING_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              OSR (%)
-              <input
-                type="number"
-                min={0}
-                max={100}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.osr}
-                onChange={(e) => onUpdate(scenario.id, { osr: clamp(Number(e.target.value), 0, 100) })}
-              />
-              {RULES.building[scenario.bType]?.minOSR != null && (
-                <div className="text-[11px] mt-1 text-neutral-500">ขั้นต่ำ {RULES.building[scenario.bType].minOSR}%</div>
-              )}
-            </label>
-            <label>
-              Green (% of OSR)
-              <input
-                type="number"
-                min={0}
-                max={100}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.greenPctOfOSR}
-                onChange={(e) => onUpdate(scenario.id, { greenPctOfOSR: clamp(Number(e.target.value), 0, 100) })}
-              />
-              {RULES.building[scenario.bType]?.greenPctOfOSR != null && (
-                <div className="text-[11px] mt-1 text-neutral-500">ขั้นต่ำ {RULES.building[scenario.bType].greenPctOfOSR}%</div>
-              )}
-            </label>
-          </div>
-        </div>
+    st.divider()
+    st.subheader("Geometry & Height")
+    g1, g2, g3 = st.columns(3)
+    s["mainFloorsAG"] = g1.number_input("Main Floors (AG)", min_value=0, value=DEFAULT["mainFloorsAG"])
+    s["mainFloorsBG"] = g2.number_input("Main Floors (BG)", min_value=0, value=DEFAULT["mainFloorsBG"])
+    s["ftf"] = g3.number_input("F2F (m)", min_value=0.0, value=DEFAULT["ftf"], step=0.1)
 
-        <div className="p-3 rounded-xl border">
-          <h3 className="font-medium text-sm flex items-center gap-2">
-            <Building2 className="w-4 h-4" /> Geometry & Height
-          </h3>
-          <div className="grid grid-cols-3 gap-3 mt-2 text-sm">
-            <label className="col-span-1">
-              Main Floors (AG)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.mainFloorsAG}
-                onChange={(e) => onUpdate(scenario.id, { mainFloorsAG: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label className="col-span-1">
-              Main Floors (BG)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.mainFloorsBG}
-                onChange={(e) => onUpdate(scenario.id, { mainFloorsBG: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label className="col-span-1">
-              F2F (m)
-              <input
-                type="number"
-                min={0}
-                step={0.1}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.ftf}
-                onChange={(e) => onUpdate(scenario.id, { ftf: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
+    p1, p2, p3 = st.columns(3)
+    s["parkingConFloorsAG"] = p1.number_input("Park Conv (AG)", min_value=0, value=DEFAULT["parkingConFloorsAG"])
+    s["parkingConFloorsBG"] = p2.number_input("Park Conv (BG)", min_value=0, value=DEFAULT["parkingConFloorsBG"])
+    s["maxHeight"] = p3.number_input("Max Height (m)", min_value=0.0, value=DEFAULT["maxHeight"], step=1.0)
 
-            <label className="col-span-1">
-              Park Conv (AG)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.parkingConFloorsAG}
-                onChange={(e) => onUpdate(scenario.id, { parkingConFloorsAG: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label className="col-span-1">
-              Park Conv (BG)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.parkingConFloorsBG}
-                onChange={(e) => onUpdate(scenario.id, { parkingConFloorsBG: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label className="col-span-1">
-              Max Height (m)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.maxHeight}
-                onChange={(e) => onUpdate(scenario.id, { maxHeight: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
+    a1, a2 = st.columns(2)
+    s["parkingAutoFloorsAG"] = a1.number_input("Auto Park (AG)", min_value=0, value=DEFAULT["parkingAutoFloorsAG"])
+    s["parkingAutoFloorsBG"] = a2.number_input("Auto Park (BG)", min_value=0, value=DEFAULT["parkingAutoFloorsBG"])
 
-            <label className="col-span-1">
-              Auto Park (AG)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.parkingAutoFloorsAG}
-                onChange={(e) => onUpdate(scenario.id, { parkingAutoFloorsAG: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label className="col-span-1">
-              Auto Park (BG)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.parkingAutoFloorsBG}
-                onChange={(e) => onUpdate(scenario.id, { parkingAutoFloorsBG: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <div className="col-span-1" />
+    st.caption("Floor Plates (m²)")
+    f1, f2, f3 = st.columns(3)
+    s["mainFloorPlate"] = f1.number_input("Main Plate", min_value=0.0, value=DEFAULT["mainFloorPlate"], step=10.0)
+    s["parkingConPlate"] = f2.number_input("Park Plate (Conv)", min_value=0.0, value=DEFAULT["parkingConPlate"], step=10.0)
+    s["parkingAutoPlate"] = f3.number_input("Park Plate (Auto)", min_value=0.0, value=DEFAULT["parkingAutoPlate"], step=10.0)
 
-            <label className="col-span-1">
-              Main Plate (m²)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.mainFloorPlate}
-                onChange={(e) => onUpdate(scenario.id, { mainFloorPlate: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label className="col-span-1">
-              Park Plate (Conv) (m²)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.parkingConPlate}
-                onChange={(e) => onUpdate(scenario.id, { parkingConPlate: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label className="col-span-1">
-              Park Plate (Auto) (m²)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.parkingAutoPlate}
-                onChange={(e) => onUpdate(scenario.id, { parkingAutoPlate: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
+    st.caption("FAR flags")
+    s["countParkingInFAR"] = st.selectbox("Count Parking in FAR?", ["Yes", "No"], index=0) == "Yes"
+    s["countBasementInFAR"] = st.selectbox("Count Basement in FAR?", ["Yes", "No"], index=0) == "Yes"
 
-            <label className="col-span-1">
-              Count Parking in FAR?
-              <select
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={String(scenario.countParkingInFAR)}
-                onChange={(e) => onUpdate(scenario.id, { countParkingInFAR: e.target.value === "true" })}
-              >
-                <option value="true">Yes</option>
-                <option value="false">No</option>
-              </select>
-            </label>
-            <label className="col-span-1">
-              Count Basement in FAR?
-              <select
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={String(scenario.countBasementInFAR)}
-                onChange={(e) => onUpdate(scenario.id, { countBasementInFAR: e.target.value === "true" })}
-              >
-                <option value="true">Yes</option>
-                <option value="false">No</option>
-              </select>
-            </label>
-            <div className="col-span-1" />
-          </div>
-        </div>
+    st.divider()
+    st.subheader("Parking Efficiency")
+    e1, e2, e3 = st.columns(3)
+    s["bayConv"] = e1.number_input("Conv Bay (m²) — net", min_value=1.0, value=DEFAULT["bayConv"], step=0.5)
+    s["circConvPct"] = e2.number_input("Conv Circ (%)", min_value=0.0, max_value=100.0, value=DEFAULT["circConvPct"]*100, step=1.0) / 100.0
+    # show eff
+    st.caption(f"eff Conv = {nf(s['bayConv']*(1+s['circConvPct']))} m²/คัน")
 
-        <div className="p-3 rounded-xl border">
-          <h3 className="font-medium text-sm flex items-center gap-2">
-            <Car className="w-4 h-4" /> Parking & Efficiency
-          </h3>
-          <div className="grid grid-cols-3 gap-3 mt-2 text-sm">
-            <label>
-              Conv Bay (m²) — net
-              <input
-                type="number"
-                min={1}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.bayConv}
-                onChange={(e) => onUpdate(scenario.id, { bayConv: Math.max(1, Number(e.target.value)) })}
-              />
-            </label>
-            <label>
-              Conv Circ (%)
-              <input
-                type="number"
-                min={0}
-                max={100}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.circConvPct * 100}
-                onChange={(e) => onUpdate(scenario.id, { circConvPct: clamp(Number(e.target.value), 0, 100) / 100 })}
-              />
-            </label>
-            <div className="text-xs text-neutral-600 flex items-end">
-              eff = {nf(scenario.bayConv * (1 + scenario.circConvPct))} m²/คัน
-            </div>
+    s["bayAuto"] = e1.number_input("Auto Bay (m²) — net", min_value=1.0, value=DEFAULT["bayAuto"], step=0.5, key="autobay")
+    s["circAutoPct"] = e2.number_input("Auto Circ (%)", min_value=0.0, max_value=100.0, value=DEFAULT["circAutoPct"]*100, step=1.0, key="autocirc") / 100.0
+    st.caption(f"eff Auto = {nf(s['bayAuto']*(1+s['circAutoPct']))} m²/คัน")
 
-            <label>
-              Auto Bay (m²) — net
-              <input
-                type="number"
-                min={1}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.bayAuto}
-                onChange={(e) => onUpdate(scenario.id, { bayAuto: Math.max(1, Number(e.target.value)) })}
-              />
-            </label>
-            <label>
-              Auto Circ (%)
-              <input
-                type="number"
-                min={0}
-                max={100}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.circAutoPct * 100}
-                onChange={(e) => onUpdate(scenario.id, { circAutoPct: clamp(Number(e.target.value), 0, 100) / 100 })}
-              />
-            </label>
-            <div className="text-xs text-neutral-600 flex items-end">
-              eff = {nf(scenario.bayAuto * (1 + scenario.circAutoPct))} m²/คัน
-            </div>
+    st.caption("Open-lot (ไม่นับ FAR)")
+    o1, o2, o3 = st.columns(3)
+    s["openLotArea"] = o1.number_input("Open-lot Area (m²)", min_value=0.0, value=DEFAULT["openLotArea"], step=10.0)
+    s["openLotBay"] = o2.number_input("Open-lot Bay (m²/คัน)", min_value=1.0, value=DEFAULT["openLotBay"], step=0.5)
+    s["openLotCircPct"] = o3.number_input("Open-lot Circ (%)", min_value=0.0, max_value=100.0, value=DEFAULT["openLotCircPct"]*100, step=1.0) / 100.0
+    st.caption(f"eff Open-lot = {nf(s['openLotBay']*(1+s['openLotCircPct']))} m²/คัน")
 
-            <label className="col-span-1">
-              Open-lot Area (m²)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.openLotArea}
-                onChange={(e) => onUpdate(scenario.id, { openLotArea: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label className="col-span-1">
-              Open-lot Bay (m²/คัน)
-              <input
-                type="number"
-                min={1}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.openLotBay}
-                onChange={(e) => onUpdate(scenario.id, { openLotBay: Math.max(1, Number(e.target.value)) })}
-              />
-            </label>
-            <label className="col-span-1">
-              Open-lot Circ (%)
-              <input
-                type="number"
-                min={0}
-                max={100}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.openLotCircPct * 100}
-                onChange={(e) => onUpdate(scenario.id, { openLotCircPct: clamp(Number(e.target.value), 0, 100) / 100 })}
-              />
-            </label>
-            <div className="col-span-3 text-xs text-neutral-600">eff (open-lot) = {nf(effAreaOpenCar)} m²/คัน</div>
-          </div>
-        </div>
+    st.divider()
+    st.subheader("Costs & Budget (THB)")
+    c1, c2 = st.columns(2)
+    s["costArchPerSqm"] = c1.number_input("Architecture (฿/m²)", min_value=0.0, value=DEFAULT["costArchPerSqm"], step=100.0)
+    s["costStructPerSqm"] = c2.number_input("Structure (฿/m²)", min_value=0.0, value=DEFAULT["costStructPerSqm"], step=100.0)
+    s["costMEPPerSqm"]   = c1.number_input("MEP (฿/m²)", min_value=0.0, value=DEFAULT["costMEPPerSqm"], step=100.0)
+    s["costGreenPerSqm"] = c2.number_input("Green (฿/m²)", min_value=0.0, value=DEFAULT["costGreenPerSqm"], step=100.0)
 
-        <div className="p-3 rounded-xl border">
-          <h3 className="font-medium text-sm flex items-center gap-2">
-            <Factory className="w-4 h-4" /> Costs & Budget
-          </h3>
-          <div className="grid grid-cols-2 gap-3 mt-2 text-sm">
-            <label>
-              Architecture {sqmLabel}
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.costArchPerSqm}
-                onChange={(e) => onUpdate(scenario.id, { costArchPerSqm: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label>
-              Structure {sqmLabel}
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.costStructPerSqm}
-                onChange={(e) => onUpdate(scenario.id, { costStructPerSqm: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label>
-              MEP {sqmLabel}
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.costMEPPerSqm}
-                onChange={(e) => onUpdate(scenario.id, { costMEPPerSqm: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label>
-              Green {sqmLabel}
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.costGreenPerSqm}
-                onChange={(e) => onUpdate(scenario.id, { costGreenPerSqm: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label>
-              Parking (Conv) ({curSymbol}/car)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.costConventionalPerCar}
-                onChange={(e) => onUpdate(scenario.id, { costConventionalPerCar: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label>
-              Parking (Auto) ({curSymbol}/car)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.costAutoPerCar}
-                onChange={(e) => onUpdate(scenario.id, { costAutoPerCar: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label>
-              Parking (Open-lot) ({curSymbol}/car)
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.costOpenLotPerCar}
-                onChange={(e) => onUpdate(scenario.id, { costOpenLotPerCar: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-            <label className="col-span-2">
-              Budget ({curSymbol})
-              <input
-                type="number"
-                min={0}
-                className="mt-1 w-full border rounded-xl px-3 py-2"
-                value={scenario.budget}
-                onChange={(e) => onUpdate(scenario.id, { budget: Math.max(0, Number(e.target.value)) })}
-              />
-            </label>
-          </div>
-          {/* custom cost items */}
-          <div className="mt-3">
-            <div className="flex items-center justify-between">
-              <h4 className="font-medium text-sm">Additional Cost Items</h4>
-              <button
-                onClick={() =>
-                  onUpdate(scenario.id, {
-                    customCosts: [...(scenario.customCosts || []), { id: Date.now(), name: "Misc.", kind: "lump_sum", rate: 0 }],
-                  })
-                }
-                className="text-sm px-2 py-1 border rounded-xl flex items-center gap-1 hover:bg-neutral-100"
-              >
-                <Plus className="w-4 h-4" />
-                Add
-              </button>
-            </div>
-            {(scenario.customCosts || []).length === 0 && (
-              <div className="text-xs text-neutral-500 mt-1">(ว่าง) — เพิ่มหมวด FF&E/Facade Premium/Consultant/Permit ฯลฯ</div>
-            )}
-            {(scenario.customCosts || []).map((i) => (
-              <div key={i.id} className="grid grid-cols-12 gap-2 items-center mt-2">
-                <input
-                  className="col-span-5 border rounded-xl px-3 py-2 text-sm"
-                  value={i.name}
-                  onChange={(e) =>
-                    onUpdate(scenario.id, { customCosts: (scenario.customCosts || []).map((x) => (x.id === i.id ? { ...x, name: e.target.value } : x)) })
-                  }
-                />
-                <select
-                  className="col-span-3 border rounded-xl px-3 py-2 text-sm"
-                  value={i.kind}
-                  onChange={(e) =>
-                    onUpdate(scenario.id, { customCosts: (scenario.customCosts || []).map((x) => (x.id === i.id ? { ...x, kind: e.target.value } : x)) })
-                  }
-                >
-                  <option value="per_sqm">per m²</option>
-                  <option value="per_car_conv">per car (Conv)</option>
-                  <option value="per_car_auto">per car (Auto)</option>
-                  <option value="lump_sum">lump sum</option>
-                </select>
-                <input
-                  type="number"
-                  className="col-span-3 border rounded-xl px-3 py-2 text-sm"
-                  value={i.rate}
-                  onChange={(e) =>
-                    onUpdate(scenario.id, { customCosts: (scenario.customCosts || []).map((x) => (x.id === i.id ? { ...x, rate: Number(e.target.value) } : x)) })
-                  }
-                />
-                <button
-                  onClick={() => onUpdate(scenario.id, { customCosts: (scenario.customCosts || []).filter((x) => x.id !== i.id) })}
-                  className="col-span-1 justify-self-end text-neutral-500 hover:text-red-600"
-                >
-                  <Trash2 className="w-5 h-5" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+    s["costConventionalPerCar"] = c1.number_input("Parking (Conv) (฿/car)", min_value=0.0, value=DEFAULT["costConventionalPerCar"], step=1000.0)
+    s["costAutoPerCar"]         = c2.number_input("Parking (Auto) (฿/car)", min_value=0.0, value=DEFAULT["costAutoPerCar"], step=1000.0)
+    s["costOpenLotPerCar"]      = c1.number_input("Parking (Open-lot) (฿/car)", min_value=0.0, value=DEFAULT["costOpenLotPerCar"], step=1000.0)
 
-      {/* Summary & Viz */}
-      <div className="grid md:grid-cols-3 gap-4">
-        <div className="p-4 rounded-2xl bg-emerald-50 border-2 border-emerald-300 shadow">
-          <h3 className="text-sm font-semibold flex items-center gap-2 text-emerald-800">
-            <TrendingUp className="w-4 h-4" /> Zoning Summary
-          </h3>
-          <div className="mt-2 text-sm space-y-1">
-            <div>
-              Max GFA: <b>{nf(derived.maxGFA)}</b> m²
-            </div>
-            <div>
-              FAR-counted Area: <b>{nf(derived.farCounted)}</b> m²
-            </div>
-            <div>
-              Open Space (OSR): <b>{nf(derived.openSpaceArea)}</b> m² ({scenario.osr}%)
-            </div>
-            <div>
-              Green Area: <b>{nf(derived.greenArea)}</b> m² ({scenario.greenPctOfOSR}% of OSR)
-            </div>
-            <div className={`text-xs ${derived.farOk ? "text-emerald-700" : "text-red-600"} flex items-center gap-1`}>
-              {!derived.farOk && <TriangleAlert className="w-3 h-3" />} FAR check: {derived.farOk ? "OK" : "Exceeds Max GFA"}
-            </div>
-          </div>
-        </div>
-        <div className="p-4 rounded-2xl bg-blue-50 border-2 border-blue-300 shadow">
-          <h3 className="text-sm font-semibold flex items-center gap-2 text-blue-800">
-            <Calculator className="w-4 h-4" /> Areas
-          </h3>
-          <div className="mt-2 text-sm space-y-1">
-            <div>
-              Main CFA (AG): <b>{nf(derived.mainCFA_AG)}</b> m²
-            </div>
-            <div>
-              Main CFA (BG): <b>{nf(derived.mainCFA_BG)}</b> m²
-            </div>
-            <div>
-              Parking CFA (Conv): <b>{nf(derived.parkConCFA)}</b> m²
-            </div>
-            <div>
-              Parking CFA (Auto): <b>{nf(derived.parkAutoCFA)}</b> m²
-            </div>
-            <div>
-              Total CFA: <b>{nf(derived.totalCFA)}</b> m²
-            </div>
-          </div>
-        </div>
-        <div className="p-4 rounded-2xl bg-yellow-50 border-2 border-yellow-300 shadow">
-          <h3 className="text-sm font-semibold flex items-center gap-2 text-yellow-800">
-            <Building2 className="w-4 h-4" /> Height
-          </h3>
-          <div className="mt-2 text-sm space-y-1">
-            <div>
-              Estimated Height (AG only): <b>{nf(derived.estHeight)}</b> m
-            </div>
-            <div>
-              Max Height: <b>{nf(scenario.maxHeight)}</b> m
-            </div>
-            <div className={`text-xs ${derived.heightOk ? "text-emerald-700" : "text-red-600"} flex items-center gap-1`}>
-              {!derived.heightOk && <TriangleAlert className="w-3 h-3" />} Height check: {derived.heightOk ? "OK" : "Exceeds Limit"}
-            </div>
-          </div>
-        </div>
-      </div>
+    s["budget"] = st.number_input("Budget (฿)", min_value=0.0, value=DEFAULT["budget"], step=1_000_000.0)
 
-      <div className="grid md:grid-cols-3 gap-4">
-        <div className="p-4 rounded-2xl bg-indigo-50 border-2 border-indigo-300 shadow">
-          <h3 className="text-sm font-semibold flex items-center gap-2 text-indigo-800">
-            <Calculator className="w-4 h-4" /> Efficiency Output
-          </h3>
-          <div className="mt-2 text-sm space-y-1">
-            <div>
-              NLA: <b>{nf(derived.nla)}</b> m² <span className="text-xs text-neutral-500">({nf(derived.nla / derived.totalCFA, 3)} × CFA)</span>
-            </div>
-            <div>
-              NSA: <b>{nf(derived.nsa)}</b> m² <span className="text-xs text-neutral-500">({nf(derived.nsa / derived.totalCFA, 3)} × CFA)</span>
-            </div>
-            <div>
-              GFA: <b>{nf(derived.gfa)}</b> m² <span className="text-xs text-neutral-500">({nf(derived.gfa / derived.totalCFA, 3)} × CFA)</span>
-            </div>
-          </div>
-        </div>
-        <div className="p-4 rounded-2xl bg-orange-50 border-2 border-orange-300 shadow">
-          <h3 className="text-sm font-semibold flex items-center gap-2 text-orange-800">
-            <Car className="w-4 h-4" /> Parking
-          </h3>
-          <div className="mt-2 text-sm space-y-1">
-            <div>
-              Cars/Floor (Conv): <b>{derived.convCarsPerFloor}</b>{" "}
-              <span className="text-xs text-neutral-500">(eff {nf(effAreaConCar)} m²/car)</span>
-            </div>
-            <div>
-              Cars/Floor (Auto): <b>{derived.autoCarsPerFloor}</b>{" "}
-              <span className="text-xs text-neutral-500">(eff {nf(effAreaAutoCar)} m²/car)</span>
-            </div>
-            <div>
-              Open-lot Cars: <b>{derived.openLotCars}</b>{" "}
-              <span className="text-xs text-neutral-500">(eff {nf(effAreaOpenCar)} m²/car)</span>
-            </div>
-            <div>
-              Total Cars (Conv): <b>{derived.totalConvCars}</b>
-            </div>
-            <div>
-              Total Cars (Auto): <b>{derived.totalAutoCars}</b>
-            </div>
-            <div>
-              Total Cars: <b>{derived.totalCars}</b>
-            </div>
-            <div>
-              Disabled Spaces (calc): <b>{derived.disabledCars}</b>
-            </div>
-          </div>
-        </div>
-        <div className="p-4 rounded-2xl bg-pink-50 border-2 border-pink-300 shadow">
-          <h3 className="text-sm font-semibold flex items-center gap-2 text-pink-800">
-            <Factory className="w-4 h-4" /> CAPEX
-          </h3>
-          <div className="mt-2 text-sm space-y-1">
-            <div>
-              Base Build Cost: <b>{currencySymbol("THB")}
-              {nf(derived.constructionCost)}</b>
-            </div>
-            <div>
-              Green Cost: <b>{currencySymbol("THB")}
-              {nf(derived.greenCost)}</b>
-            </div>
-            <div>
-              Parking Cost: <b>{currencySymbol("THB")}
-              {nf(derived.parkingCost)}</b>{" "}
-              <span className="text-xs text-neutral-500">(includes open-lot)</span>
-            </div>
-            {(scenario.customCosts || []).length > 0 && (
-              <div>
-                Custom Items: <b>{currencySymbol("THB")}
-                {nf(derived.customCostTotal)}</b>
-              </div>
-            )}
-            <div className="border-t pt-2">
-              Total CAPEX: <b>{currencySymbol("THB")}
-              {nf(derived.capexTotal)}</b>
-            </div>
-            <div className={`text-xs ${derived.budgetOk ? "text-emerald-700" : "text-red-600"} flex items-center gap-1`}>
-              {!derived.budgetOk && <TriangleAlert className="w-3 h-3" />} Budget check: {derived.budgetOk ? "OK" : "Over Budget"} (Budget{" "}
-              {currencySymbol("THB")}
-              {nf(scenario.budget)})
-            </div>
-          </div>
-        </div>
-      </div>
+# Compute
+d = compute(s)
 
-      {/* Viz row */}
-      <div className="grid md:grid-cols-3 gap-4">
-        <div className="p-3 rounded-2xl bg-white border shadow flex flex-col">
-          <div className="text-sm font-semibold flex items-center gap-2 mb-2">
-            <LayoutGrid className="w-4 h-4" /> Site Visualization
-          </div>
-          <SiteViz siteArea={scenario.siteArea} osr={scenario.osr} greenArea={derived.greenArea} className="w-full h-auto" />
-          <div className="text-xs text-neutral-600 mt-2">แผนภาพสัดส่วน Site / Open Space / Green (เชิงสเกลพื้นที่แบบย่อ)</div>
-        </div>
-        <div className="p-3 rounded-2xl bg-white border shadow col-span-2">
-          <div className="text-sm font-semibold flex items-center gap-2 mb-2">
-            <BarChart3 className="w-4 h-4" /> CAPEX Breakdown
-          </div>
-          <div style={{ width: "100%", height: 240 }}>
-            <ResponsiveContainer>
-              <PieChart>
-                <Pie data={capexData} dataKey="value" nameKey="name" innerRadius={50} outerRadius={80}>
-                  {capexData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(v) => nf(v)} />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
+# =============================
+# Summary blocks
+# =============================
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Max GFA (m²)", nf(d["maxGFA"]))
+m2.metric("FAR-counted (m²)", nf(d["farCounted"]), help="ไม่นับ open-lot")
+m3.metric("Estimated Height (m)", nf(d["estHeight"]), delta="OK" if d["heightOk"] else "Exceeds")
+m4.metric("CAPEX (฿)", nf(d["capexTotal"]), delta="OK" if d["budgetOk"] else "Over Budget")
 
-      {/* Legal & Warning banner */}
-      {warnings.length > 0 && (
-        <div className="p-4 rounded-2xl bg-amber-50 border-amber-200 border text-amber-900 flex gap-3 items-start">
-          <TriangleAlert className="w-4 h-4 mt-0.5" />
-          <div className="text-sm">
-            <b>Design check:</b> {warnings.join(" · ")}
-          </div>
-        </div>
-      )}
+st.markdown("### Zoning / Areas / Parking")
+c1, c2, c3 = st.columns(3)
 
-      {/* Export/Import */}
-      <div className="flex gap-2">
-        <button onClick={handleExportCSV} className="px-3 py-2 rounded-xl border shadow-sm hover:bg-neutral-100 flex items-center gap-2">
-          <Download className="w-4 h-4" /> Export CSV
-        </button>
-        <label className="px-3 py-2 rounded-xl border shadow-sm hover:bg-neutral-100 flex items-center gap-2 cursor-pointer">
-          <FileUp className="w-4 h-4" /> Import CSV
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".csv"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              handleImportCSV(f);
-              e.target.value = "";
-            }}
-          />
-        </label>
-      </div>
-    </div>
-  );
-}
+with c1:
+    st.subheader("Zoning")
+    st.write(f"**Open Space**: {nf(d['openSpaceArea'])} m² ({s['osr']}%)")
+    st.write(f"**Green**: {nf(d['greenArea'])} m² ({s['greenPctOfOSR']}% of OSR)")
+    st.write(f"**FAR check**: {'✅ OK' if d['farOk'] else '❌ Exceeds Max GFA'}")
 
-// Small SVG site visualizer
-function SiteViz({ siteArea, osr, greenArea, className }) {
-  const W = 420;
-  const H = 260;
-  const P = 16;
-  const siteW = W - 2 * P;
-  const siteH = H - 2 * P;
-  const osrRatio = clamp(osr / 100, 0, 1);
-  const greenRatio = clamp(greenArea / Math.max(1e-9, siteArea * osrRatio), 0, 1);
-  const osrW = siteW * Math.sqrt(osrRatio);
-  const osrH = siteH * Math.sqrt(osrRatio);
-  const greenW = osrW * Math.sqrt(greenRatio);
-  const greenH = osrH * Math.sqrt(greenRatio);
-  const cx = W / 2;
-  const cy = H / 2;
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className={className}>
-      <rect x={0} y={0} width={W} height={H} rx={12} fill="#f8fafc" />
-      <rect x={P} y={P} width={siteW} height={siteH} fill="#fff" stroke="#CBD5E1" strokeWidth={2} />
-      <rect x={cx - osrW / 2} y={cy - osrH / 2} width={osrW} height={osrH} fill="#dcfce7" stroke="#86efac" />
-      <rect x={cx - greenW / 2} y={cy - greenH / 2} width={greenW} height={greenH} fill="#86efac" stroke="#059669" />
-      <g fontSize={10} fill="#334155">
-        <text x={P + 6} y={P + 14}>
-          Site
-        </text>
-        <text x={cx - osrW / 2 + 6} y={cy - osrH / 2 + 14}>
-          Open Space
-        </text>
-        <text x={cx - greenW / 2 + 6} y={cy - greenH / 2 + 14}>
-          Green
-        </text>
-      </g>
-    </svg>
-  );
-}
+with c2:
+    st.subheader("Areas")
+    st.write(f"Main CFA (AG): **{nf(d['mainCFA_AG'])}** m²")
+    st.write(f"Main CFA (BG): **{nf(d['mainCFA_BG'])}** m²")
+    st.write(f"Parking CFA (Conv): **{nf(d['parkConCFA'])}** m²")
+    st.write(f"Parking CFA (Auto): **{nf(d['parkAutoCFA'])}** m²")
+    st.write(f"Total CFA: **{nf(d['totalCFA'])}** m²")
 
-// =============================
-// Test panel (ALWAYS add tests)
-// =============================
-function TestsPanel({ scenario, derived }) {
-  const tests = useMemo(() => {
-    const mAG = scenario.mainFloorsAG * scenario.mainFloorPlate;
-    const mBG = scenario.mainFloorsBG * scenario.mainFloorPlate;
-    const pcAG = scenario.parkingConFloorsAG * scenario.parkingConPlate;
-    const pcBG = scenario.parkingConFloorsBG * scenario.parkingConPlate;
-    const paAG = scenario.parkingAutoFloorsAG * scenario.parkingAutoPlate;
-    const paBG = scenario.parkingAutoFloorsBG * scenario.parkingAutoPlate;
+with c3:
+    st.subheader("Parking")
+    st.write(f"Cars/Floor (Conv): **{d['convCarsPerFloor']}** (eff {nf(d['effAreaConCar'])} m²/car)")
+    st.write(f"Cars/Floor (Auto): **{d['autoCarsPerFloor']}** (eff {nf(d['effAreaAutoCar'])} m²/car)")
+    st.write(f"Open-lot Cars: **{d['openLotCars']}** (eff {nf(d['effAreaOpenCar'])} m²/car)")
+    st.write(f"Total Cars: **{d['totalCars']}**  · Disabled: **{d['disabledCars']}**")
 
-    const farExpected = computeFarCounted(
-      mAG,
-      mBG,
-      pcAG,
-      pcBG,
-      paAG,
-      paBG,
-      scenario.countParkingInFAR,
-      scenario.countBasementInFAR
-    );
+# CAPEX Pie
+st.markdown("### CAPEX Breakdown")
+pie_df = pd.DataFrame([
+    {"name": "Construction", "value": max(0, d["constructionCost"])},
+    {"name": "Green",        "value": max(0, d["greenCost"])},
+    {"name": "Parking",      "value": max(0, d["parkingCost"])},
+])
+fig = px.pie(pie_df, values="value", names="name", hole=0.45)
+st.plotly_chart(fig, use_container_width=True)
 
-    const openLotExpectedCars = Math.floor(scenario.openLotArea / Math.max(1, scenario.openLotBay * (1 + scenario.openLotCircPct)));
+# Download / Upload CSV of scenario
+st.markdown("### Export / Import Scenario")
+export_rows = [{"Field": k, "Value": v} for k, v in s.items()]
+csv_str = create_csv(export_rows)
+st.download_button("⬇️ Export CSV", data=csv_str, file_name="scenario.csv", mime="text/csv")
 
-    return [
-      { name: "calcDisabledParking(0)", actual: calcDisabledParking(0), expected: 0 },
-      { name: "calcDisabledParking(50)", actual: calcDisabledParking(50), expected: 2 },
-      { name: "calcDisabledParking(51)", actual: calcDisabledParking(51), expected: 3 },
-      { name: "calcDisabledParking(100)", actual: calcDisabledParking(100), expected: 3 },
-      { name: "calcDisabledParking(101)", actual: calcDisabledParking(101), expected: 4 },
-      { name: "calcDisabledParking(250)", actual: calcDisabledParking(250), expected: 5 },
-      { name: "computeFarCounted(default flags)", actual: derived.farCounted, expected: farExpected },
-      // synthetic sanity checks
-      {
-        name: "computeFarCounted(no parking, no basement)",
-        actual: computeFarCounted(100, 20, 30, 40, 50, 60, false, false),
-        expected: 100,
-      },
-      {
-        name: "computeFarCounted(parking+basement)",
-        actual: computeFarCounted(100, 20, 30, 40, 50, 60, true, true),
-        expected: 300,
-      },
-      // open-lot behavior
-      { name: "openLotCars formula", actual: derived.openLotCars, expected: openLotExpectedCars },
-      { name: "open-lot NOT in FAR", actual: derived.farCounted, expected: farExpected },
-    ];
-  }, [scenario, derived.farCounted, derived.openLotCars]);
+up = st.file_uploader("⬆️ Import CSV (Field,Value)", type=["csv"])
+if up:
+    df = pd.read_csv(up)
+    try:
+        imported = {}
+        for _, row in df.iterrows():
+            k = str(row["Field"])
+            v = row["Value"]
+            try:
+                if str(v).strip() == "":
+                    imported[k] = ""
+                else:
+                    imported[k] = float(v) if "." in str(v) or "e" in str(v).lower() else int(v)
+            except:
+                imported[k] = v
+        st.info("นำเข้าค่าจาก CSV สำเร็จ (แสดงตัวอย่าง):")
+        st.json({k: imported.get(k, s[k]) for k in s.keys()})
+        st.caption("**Tip**: นำค่าที่ import มาใส่เป็น default ได้โดยแก้ `DEFAULT` ในโค้ด")
+    except Exception as e:
+        st.error(f"Import failed: {e}")
 
-  return (
-    <div className="p-4 rounded-2xl border bg-white shadow">
-      <div className="font-medium mb-2">Self-check Tests</div>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 text-sm">
-        {tests.map((t) => {
-          const pass = deepEqual(t.actual, t.expected);
-          return (
-            <div
-              key={t.name}
-              className={`flex items-center justify-between rounded-lg border px-3 py-2 ${
-                pass ? "bg-emerald-50 border-emerald-200" : "bg-rose-50 border-rose-200"
-              }`}
-            >
-              <div className="truncate">{t.name}</div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-neutral-600">{String(t.actual)}</span>
-                <span className={`px-2 py-0.5 text-xs rounded-full ${pass ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
-                  {pass ? "PASS" : "FAIL"}
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
+# =============================
+# Self-check Tests (เทียบกับเดิม)
+# =============================
+st.markdown("### Self-check Tests")
+def trow(name, actual, expected):
+    ok = (actual == expected)
+    st.write(("✅" if ok else "❌") + f" **{name}** — actual: `{actual}`  expected: `{expected}`")
 
-// helpers used by components
-function deepEqual(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-function currencySymbol(c) {
-  return c === "THB" ? "฿" : "$";
-}
+trow("calcDisabledParking(0)",   calc_disabled_parking(0),   0)
+trow("calcDisabledParking(50)",  calc_disabled_parking(50),  2)
+trow("calcDisabledParking(51)",  calc_disabled_parking(51),  3)
+trow("calcDisabledParking(100)", calc_disabled_parking(100), 3)
+trow("calcDisabledParking(101)", calc_disabled_parking(101), 4)
+trow("calcDisabledParking(250)", calc_disabled_parking(250), 5)
 
-// =============================
-// Preview App (export default)
-// =============================
-export default function FeasibilityAppPreview() {
-  const [scenario, setScenario] = useState({ id: 1, name: "Test Project", ...DEFAULT_SCENARIO });
-  const { derived } = useScenarioCompute(scenario);
+# recompute expected FAR with current toggles
+mAG = s["mainFloorsAG"] * s["mainFloorPlate"]
+mBG = s["mainFloorsBG"] * s["mainFloorPlate"]
+pcAG = s["parkingConFloorsAG"] * s["parkingConPlate"]
+pcBG = s["parkingConFloorsBG"] * s["parkingConPlate"]
+paAG = s["parkingAutoFloorsAG"] * s["parkingAutoPlate"]
+paBG = s["parkingAutoFloorsBG"] * s["parkingAutoPlate"]
+far_expected = compute_far_counted(mAG, mBG, pcAG, pcBG, paAG, paBG, s["countParkingInFAR"], s["countBasementInFAR"])
+trow("computeFarCounted(default flags)", d["farCounted"], far_expected)
 
-  return (
-    <div className="min-h-screen bg-neutral-100 p-6 space-y-6">
-      <ScenarioCard
-        scenario={scenario}
-        preset="None"
-        onUpdate={(id, patch) => setScenario((s) => ({ ...s, ...patch }))}
-        onRemove={() => setScenario({ id: 1, name: "Test Project", ...DEFAULT_SCENARIO })}
-        currency="THB"
-        fxTHBperUSD={36}
-      />
-      <TestsPanel scenario={scenario} derived={derived} />
-    </div>
-  );
-}
+trow("computeFarCounted(no parking, no basement)",
+     compute_far_counted(100, 20, 30, 40, 50, 60, False, False), 100)
+trow("computeFarCounted(parking+basement)",
+     compute_far_counted(100, 20, 30, 40, 50, 60, True, True), 300)
+
+open_lot_expected = math.floor(s["openLotArea"] / max(1, s["openLotBay"] * (1 + s["openLotCircPct"])))
+trow("openLotCars formula", d["openLotCars"], open_lot_expected)
+trow("open-lot NOT in FAR (identity check)", d["farCounted"], far_expected)
